@@ -6,7 +6,7 @@ import pathlib
 import re
 from dataclasses import dataclass
 
-MAX_LINE_LENGTH = 42
+MAX_LINE_LENGTH = 34
 MAX_LINES_PER_CUE = 2
 
 DEFAULT_REPLACEMENTS = [
@@ -27,6 +27,23 @@ COMMON_FIXES = [
     (r"\bnani\b", "what"),
     (r"\bkirsten\b", "Kristen"),
 ]
+
+BREAK_PUNCTUATION = {",", ";", ":", "?", "!", "...", "—", "-"}
+BREAK_WORDS = {
+    "and",
+    "but",
+    "so",
+    "or",
+    "then",
+    "because",
+    "while",
+    "when",
+    "if",
+    "though",
+    "although",
+    "since",
+    "therefore",
+}
 
 
 @dataclass
@@ -109,8 +126,11 @@ def apply_terms(text: str, replacements: list[tuple[str, str]]) -> str:
 def clean_spacing_and_punctuation(text: str) -> str:
     t = text.strip()
     t = re.sub(r"\s+", " ", t)
-    t = re.sub(r"\s+([,.;:!?])", r"\1", t)
-    t = re.sub(r"([,.;:!?])(\S)", r"\1 \2", t)
+    t = t.replace(". . .", "...")
+    t = t.replace(". ..", "...")
+    t = t.replace(".. .", "...")
+    t = re.sub(r"\s+([,;:!?])", r"\1", t)
+    t = re.sub(r"([,;:!?])(\S)", r"\1 \2", t)
     t = re.sub(r"\s+'", "'", t)
     t = re.sub(r"'\s+", "'", t)
     return t.strip()
@@ -147,48 +167,66 @@ def ensure_end_punctuation(text: str) -> str:
     return text + "."
 
 
+def choose_line_break(tokens: list[str], max_line_len: int) -> int:
+    if len(tokens) <= 1:
+        return 0
+
+    best_index = 1
+    best_score = float("inf")
+
+    for index in range(1, len(tokens)):
+        left = " ".join(tokens[:index])
+        right = " ".join(tokens[index:])
+        left_len = len(left)
+        right_len = len(right)
+
+        if not left or not right:
+            continue
+
+        overflow_penalty = max(0, left_len - max_line_len) + max(0, right_len - max_line_len)
+        balance_penalty = abs(left_len - right_len)
+        punctuation_bonus = 0
+        break_word_bonus = 0
+
+        prev_word = tokens[index - 1]
+        next_word = tokens[index]
+        if prev_word[-1:] in {",", ";", ":", "?", "!"} or prev_word.endswith("..."):
+            punctuation_bonus = 12
+        elif next_word.lower().strip("'\"()[]{}").rstrip(",;:?!") in BREAK_WORDS:
+            break_word_bonus = 6
+
+        # Avoid very short first lines unless the punctuation strongly suggests it.
+        short_line_penalty = 0
+        if left_len < max_line_len * 0.35:
+            short_line_penalty = int((max_line_len * 0.35 - left_len) * 2)
+
+        score = overflow_penalty * 20 + balance_penalty + short_line_penalty - punctuation_bonus - break_word_bonus
+        if score < best_score:
+            best_score = score
+            best_index = index
+
+    return best_index
+
+
 def wrap_subtitle(text: str, max_line_len: int = MAX_LINE_LENGTH, max_lines: int = MAX_LINES_PER_CUE) -> str:
     words = text.split()
     if not words:
         return ""
 
-    lines: list[str] = []
-    current = words[0]
+    if len(text) <= max_line_len:
+        return text
 
-    for word in words[1:]:
-        candidate = f"{current} {word}"
-        if len(candidate) <= max_line_len:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
+    if max_lines != 2:
+        return text
 
-    lines.append(current)
+    break_index = choose_line_break(words, max_line_len)
+    left = " ".join(words[:break_index]).strip()
+    right = " ".join(words[break_index:]).strip()
 
-    if len(lines) <= max_lines:
-        return "\n".join(lines)
+    if not left or not right:
+        return text
 
-    # Rebalance into exactly two lines without dropping content.
-    if max_lines == 2:
-        best_left = text
-        best_right = ""
-        best_score = float("inf")
-        tokens = text.split()
-        for i in range(1, len(tokens)):
-            left = " ".join(tokens[:i])
-            right = " ".join(tokens[i:])
-            overflow_penalty = max(0, len(left) - max_line_len) + max(0, len(right) - max_line_len)
-            balance_penalty = abs(len(left) - len(right))
-            score = overflow_penalty * 10 + balance_penalty
-            if score < best_score:
-                best_left = left
-                best_right = right
-                best_score = score
-        return f"{best_left}\n{best_right}"
-
-    merged = lines[: max_lines - 1]
-    merged.append(" ".join(lines[max_lines - 1 :]))
-    return "\n".join(merged)
+    return f"{left}\n{right}"
 
 
 def stylize_text(text: str, replacements: list[tuple[str, str]]) -> str:
@@ -199,57 +237,19 @@ def stylize_text(text: str, replacements: list[tuple[str, str]]) -> str:
     return out
 
 
-def chunk_text(text: str, max_chars: int) -> list[str]:
-    words = text.split()
-    if not words:
-        return []
-
-    chunks: list[str] = []
-    current = words[0]
-    for word in words[1:]:
-        candidate = f"{current} {word}"
-        if len(candidate) <= max_chars:
-            current = candidate
-        else:
-            chunks.append(current)
-            current = word
-    chunks.append(current)
-    return chunks
-
-
-def stylize_cue(cue: Cue, replacements: list[tuple[str, str]]) -> list[Cue]:
+def stylize_cue(cue: Cue, replacements: list[tuple[str, str]]) -> Cue:
     base = stylize_text(cue.text, replacements)
     if not base:
-        return [Cue(index=cue.index, timecode=cue.timecode, text="")]
+        return Cue(index=cue.index, timecode=cue.timecode, text="")
 
-    max_chars_per_cue = MAX_LINE_LENGTH * MAX_LINES_PER_CUE
-    chunks = chunk_text(base, max_chars_per_cue)
-
-    start_ms, end_ms = split_timecode(cue.timecode)
-    duration = max(1, end_ms - start_ms)
-    count = max(1, len(chunks))
-
-    styled: list[Cue] = []
-    for i, chunk in enumerate(chunks):
-        chunk_text_clean = chunk.strip().rstrip(",;: ")
-        if i == count - 1:
-            chunk_text_clean = ensure_end_punctuation(chunk_text_clean)
-        wrapped = wrap_subtitle(chunk_text_clean)
-
-        seg_start = start_ms + (duration * i) // count
-        seg_end = start_ms + (duration * (i + 1)) // count
-        if seg_end <= seg_start:
-            seg_end = seg_start + 1
-
-        styled.append(Cue(index=cue.index, timecode=join_timecode(seg_start, seg_end), text=wrapped))
-
-    return styled
+    wrapped = wrap_subtitle(ensure_end_punctuation(base.strip().rstrip(",;: ")))
+    return Cue(index=cue.index, timecode=cue.timecode, text=wrapped)
 
 
 def stylize_cues(cues: list[Cue], replacements: list[tuple[str, str]]) -> list[Cue]:
     output: list[Cue] = []
     for cue in cues:
-        output.extend(stylize_cue(cue, replacements))
+        output.append(stylize_cue(cue, replacements))
     return output
 
 
