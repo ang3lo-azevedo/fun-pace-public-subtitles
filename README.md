@@ -8,11 +8,11 @@ It is intended to be used alongside the public One Pace subtitle mirror at https
 - [input/](input/): source MKVs, style reference ASS files, and fonts.
 - [input/fonts/](input/fonts/): fonts attached during mux.
 - [output/subtitles/](output/subtitles/): generated ASS subtitles.
-- [output/](output/): final muxed MKVs, organized per episode folder.
+- [output/](output/): final muxed MKVs.
 
 Example output paths:
-- [output/subtitles/[Episode Name]/[Episode Name].ass](output/subtitles/)
-- [output/[Episode Name]/[Episode Name with [AI Subs]].mkv](output/)
+- [output/subtitles/[Episode Name with [AI Subs]].ass](output/subtitles/)
+- [output/[Episode Name with [AI Subs]].mkv](output/)
 
 ## What it does
 
@@ -72,7 +72,7 @@ python3 scripts/fun-pace-subs transcribe "input.wav"
 python3 scripts/fun-pace-subs normalize "input.srt"
 python3 scripts/fun-pace-subs style "input.srt"
 python3 scripts/fun-pace-subs assify "input.srt"
-python3 scripts/fun-pace-subs mux "input.mkv" "output/subtitles/<episode>/<episode>.ass"
+python3 scripts/fun-pace-subs mux "input.mkv" "output/subtitles/<episode with [AI Subs]>.ass"
 ```
 
 Extract source ASS from an MKV for style comparison (optional):
@@ -84,7 +84,7 @@ python3 scripts/fun-pace-subs extract-ass "input/[One Pace][127-129] Little Gard
 Generate a matched-style ASS from SRT using a chosen style block:
 
 ```text
-python3 scripts/fun-pace-subs assify "output/episode.styled.srt" "output/subtitles/episode/episode.ass" --style-from-ass "input/alabasta 18 en.ass"
+python3 scripts/fun-pace-subs assify "output/episode.styled.srt" "output/subtitles/episode [AI Subs].ass" --style-from-ass "input/alabasta 18 en.ass"
 ```
 
 ## Output naming

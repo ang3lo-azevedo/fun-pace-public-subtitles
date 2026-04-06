@@ -64,13 +64,22 @@ def stem_for(path: str) -> str:
     return Path(path).stem
 
 
+def rocm_available() -> bool:
+    # ROCm commonly exposes /dev/kfd; rocminfo is a secondary signal.
+    return Path("/dev/kfd").exists() or command_exists("rocminfo")
+
+
+def nvidia_available() -> bool:
+    return command_exists("nvidia-smi")
+
+
 def resolve_whisper_runtime(device: str, compute_type: str, batch_size: str) -> tuple[str, str, str]:
     resolved_device = device
     resolved_compute = compute_type
     resolved_batch = batch_size
 
     if resolved_device == "auto":
-        resolved_device = "cpu"
+        resolved_device = "cuda" if (rocm_available() or nvidia_available()) else "cpu"
 
     if resolved_compute == "auto":
         resolved_compute = "float16" if resolved_device == "cuda" else "int8"
@@ -214,18 +223,34 @@ def transcribe_audio(
 ) -> str:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    rocm_detected = rocm_available()
+    nvidia_detected = nvidia_available()
+    log(
+        "Accelerator detection: "
+        f"rocm={'yes' if rocm_detected else 'no'} "
+        f"nvidia={'yes' if nvidia_detected else 'no'}"
+    )
+
     resolved_device, resolved_compute, resolved_batch = resolve_whisper_runtime(device, compute_type, batch_size)
 
     if command_exists("whisperx"):
         whisperx_cmd = ["whisperx"]
     elif command_exists("uvx"):
-        torch_backend = os.environ.get("FUN_PACE_UV_TORCH_BACKEND", "cpu")
+        torch_backend = os.environ.get("FUN_PACE_UV_TORCH_BACKEND")
+        if not torch_backend:
+            torch_backend = "rocm6.4" if rocm_available() else "cpu"
         if torch_backend == "cpu" and resolved_device == "cuda":
             resolved_device = "cpu"
             if compute_type == "auto":
                 resolved_compute = "int8"
             if batch_size == "auto":
                 resolved_batch = "4"
+        elif torch_backend.startswith("rocm") and resolved_device == "cpu" and device == "auto":
+            resolved_device = "cuda"
+            if compute_type == "auto":
+                resolved_compute = "float16"
+            if batch_size == "auto":
+                resolved_batch = "16"
         whisperx_cmd = ["uvx", "--torch-backend", torch_backend, "--from", "whisperx", "whisperx"]
         log(f"Using uvx fallback for WhisperX with torch backend: {torch_backend} (first run may take longer).")
     else:
@@ -488,22 +513,18 @@ def main() -> None:
     if args.command == "run":
         input_video = args.input_video
         input_path = Path(input_video)
+        mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", input_path.stem)
 
-        # Keep final subtitle artifacts in a top-level subtitles folder by default.
+        # Keep generated ASS files in a single subtitles root without per-episode folders.
         subtitle_root = Path(args.output_dir).resolve() if args.output_dir else (PROJECT_ROOT / "output" / "subtitles").resolve()
         subtitle_root.mkdir(parents=True, exist_ok=True)
 
         base_name = stem_for(input_video)
-        subtitle_dir = subtitle_root / base_name
-        subtitle_dir.mkdir(parents=True, exist_ok=True)
-
-        ass_output_path = subtitle_dir / f"{base_name}.ass"
+        ass_output_path = subtitle_root / f"{mux_base_name}.ass"
         ass_output = str(ass_output_path)
 
         media_symlink_path = input_path.with_suffix(".ass")
-        mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", input_path.stem)
-        mux_output_dir = (PROJECT_ROOT / "output" / base_name).resolve()
-        muxed_output = str((mux_output_dir / f"{mux_base_name}.mkv").resolve())
+        muxed_output = str((PROJECT_ROOT / "output" / f"{mux_base_name}.mkv").resolve())
         fonts_dir = PROJECT_ROOT / "input" / "fonts"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -537,7 +558,7 @@ def main() -> None:
             convert_srt_to_ass(normalized_srt, ass_output, env, style_reference_ass)
 
             if args.keep_audio:
-                shutil.copy2(extracted_audio, subtitle_dir / f"{base_name}.wav")
+                shutil.copy2(extracted_audio, subtitle_root / f"{mux_base_name}.wav")
 
         log(f"Wrote ASS subtitles to {ass_output}")
 
@@ -597,7 +618,7 @@ def main() -> None:
 
     if args.command == "mux":
         mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", stem_for(args.input_video))
-        output_mkv = args.output_mkv or str((PROJECT_ROOT / "output" / stem_for(args.input_video) / f"{mux_base_name}.mkv").resolve())
+        output_mkv = args.output_mkv or str((PROJECT_ROOT / "output" / f"{mux_base_name}.mkv").resolve())
         mux_subtitles(args.input_video, args.input_subs, output_mkv, env, fonts_dir=PROJECT_ROOT / "input" / "fonts")
         log(f"Wrote muxed MKV to {output_mkv}")
         return
