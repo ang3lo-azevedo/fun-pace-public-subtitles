@@ -1,0 +1,342 @@
+[Script Info]
+Title: Fun Pace Styled Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+PlayResX: 1440
+PlayResY: 1080
+LayoutResX: 1440
+LayoutResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Main-207-,Impress BT Pace,82,&H00FFFFFF,&H00002EFF,&H00000000,&H78000000,0,0,0,0,100,100,0,0,1,3.8,3.8,2,180,180,27,1
+Style: Top,Impress BT Pace,82,&H00FFFFFF,&H00002EFF,&H00000000,&H78000000,0,0,0,0,100,100,0,0,1,3.8,3.8,8,180,180,27,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:07.27,0:00:10.63,Main-207-,,0,0,0,,The world, what a glorious place.
+Dialogue: 0,0:00:11.61,0:00:16.92,Main-207-,,0,0,0,,Seek freedom and it will lie stretched out\Nbefore your eyes.
+Dialogue: 0,0:00:16.94,0:00:20.50,Main-207-,,0,0,0,,If the endless dream guides your restless\Nspirit, seize it, raise your flag and
+Dialogue: 0,0:00:20.50,0:00:24.06,Main-207-,,0,0,0,,stand tall.
+Dialogue: 0,0:00:30.12,0:00:34.71,Main-207-,,0,0,0,,Think back to the time when my search first\Nbegan Left behind those shores of sand
+Dialogue: 0,0:00:34.71,0:00:39.30,Main-207-,,0,0,0,,For the endless everlasting world out\Nthere I know that with this burning passion
+Dialogue: 0,0:00:39.30,0:00:43.89,Main-207-,,0,0,0,,driving me Someday somewhere I'll finally\Nsee The light I have searched for
+Dialogue: 0,0:00:43.89,0:00:48.49,Main-207-,,0,0,0,,everywhere.
+Dialogue: 0,0:00:53.63,0:00:57.38,Main-207-,,0,0,0,,When the summer sun is shining, shaking\Nthe sails of my heart, I know I'll be able
+Dialogue: 0,0:00:57.38,0:01:01.14,Main-207-,,0,0,0,,to see.
+Dialogue: 0,0:01:03.66,0:01:09.60,Main-207-,,0,0,0,,A brand new world that had been hiding Has\Nopened up its doors for me to go Away
+Dialogue: 0,0:01:09.60,0:01:15.54,Main-207-,,0,0,0,,from the sky Weigh it in a tub of waves\NThe more despair I can be saved For the
+Dialogue: 0,0:01:15.54,0:01:21.48,Main-207-,,0,0,0,,horizon on the other side is Yeah, yeah,\Nyeah, yeah Is what I am for And though I
+Dialogue: 0,0:01:21.48,0:01:27.41,Main-207-,,0,0,0,,travel far from where my search began\NOverseas of green and shores of sand Through
+Dialogue: 0,0:01:27.41,0:01:33.35,Main-207-,,0,0,0,,the endless everlasting.
+Dialogue: 0,0:01:33.57,0:01:39.19,Main-207-,,0,0,0,,I know that with this burning passion\Ndriving me somewhere, I'll finally see the
+Dialogue: 0,0:01:39.19,0:01:44.80,Main-207-,,0,0,0,,light I have searched for everywhere.
+Dialogue: 0,0:02:16.67,0:02:17.99,Main-207-,,0,0,0,,Come on, you guys, wake up!
+Dialogue: 0,0:02:18.49,0:02:19.07,Main-207-,,0,0,0,,Wake up!
+Dialogue: 0,0:02:20.57,0:02:22.05,Main-207-,,0,0,0,,Nami, morning.
+Dialogue: 0,0:02:22.83,0:02:29.85,Main-207-,,0,0,0,,How about a passionate good morning kiss?
+Dialogue: 0,0:02:35.92,0:02:38.76,Main-207-,,0,0,0,,You bastard, your disgusting face nearly\Nscared me half to death!
+Dialogue: 0,0:02:38.82,0:02:39.38,Main-207-,,0,0,0,,I scared you?
+Dialogue: 0,0:02:39.40,0:02:40.46,Main-207-,,0,0,0,,What the hell do you think you're. ..
+Dialogue: 0,0:02:40.48,0:02:42.48,Main-207-,,0,0,0,,There's an island up ahead!
+Dialogue: 0,0:02:42.90,0:02:44.56,Main-207-,,0,0,0,,Guys, did you hear me?
+Dialogue: 0,0:02:44.70,0:02:45.06,Main-207-,,0,0,0,,Island?
+Dialogue: 0,0:02:50.75,0:02:51.39,Main-207-,,0,0,0,,An island?
+Dialogue: 0,0:02:51.67,0:02:52.09,Main-207-,,0,0,0,,Where?
+Dialogue: 0,0:02:53.15,0:02:53.73,Main-207-,,0,0,0,,Over there.
+Dialogue: 0,0:03:25.17,0:03:28.53,Main-207-,,0,0,0,,This island looks like it should be full\Nof big, strong, crazy monsters!
+Dialogue: 0,0:03:29.37,0:03:29.49,Main-207-,,0,0,0,,Ow!
+Dialogue: 0,0:03:29.67,0:03:31.27,Main-207-,,0,0,0,,My nose still isn't working right!
+Dialogue: 0,0:03:31.49,0:03:32.23,Main-207-,,0,0,0,,Look what you did!
+Dialogue: 0,0:03:32.35,0:03:33.73,Main-207-,,0,0,0,,It could be permanently broken!
+Dialogue: 0,0:03:34.14,0:03:36.08,Main-207-,,0,0,0,,Nothing here feels out of the ordinary.
+Dialogue: 0,0:03:36.44,0:03:37.94,Main-207-,,0,0,0,,It appears to be a small island.
+Dialogue: 0,0:03:38.56,0:03:39.48,Main-207-,,0,0,0,,Look, Nami!
+Dialogue: 0,0:03:39.96,0:03:42.66,Main-207-,,0,0,0,,Fruits like this are perfect for\Nreplenishing our food supply.
+Dialogue: 0,0:03:42.98,0:03:45.28,Main-207-,,0,0,0,,And judging from this crop, there's no\Nshortage of goodies!
+Dialogue: 0,0:03:46.48,0:03:47.10,Main-207-,,0,0,0,,Wow.
+Dialogue: 0,0:03:47.68,0:03:50.08,Main-207-,,0,0,0,,We should find as many as we can and load\Nthem on the ship.
+Dialogue: 0,0:03:50.46,0:03:53.36,Main-207-,,0,0,0,,I bet there are plenty of plants and\Nvegetables we can use for food, too.
+Dialogue: 0,0:03:54.34,0:03:57.60,Main-207-,,0,0,0,,With all it has to offer, this little\Nisland seems like a cook's paradise.
+Dialogue: 0,0:03:57.84,0:03:58.38,Main-207-,,0,0,0,,Okay, then.
+Dialogue: 0,0:03:58.46,0:04:01.50,Main-207-,,0,0,0,,It'll be your job to look for anything we\Ncan use as a source of food.
+Dialogue: 0,0:04:02.06,0:04:03.65,Main-207-,,0,0,0,,As for the rest of you, here.
+Dialogue: 0,0:04:04.75,0:04:05.47,Main-207-,,0,0,0,,What's that?
+Dialogue: 0,0:04:05.57,0:04:06.25,Main-207-,,0,0,0,,Draw lots?
+Dialogue: 0,0:04:06.43,0:04:06.97,Main-207-,,0,0,0,,It's simple.
+Dialogue: 0,0:04:07.03,0:04:10.33,Main-207-,,0,0,0,,The three who draw the shortest lots will\Nspend all day collecting this fruit.
+Dialogue: 0,0:04:10.49,0:04:12.36,Main-207-,,0,0,0,,And whoever draws the longest lot will have\Nthe duty of staying here to protect the
+Dialogue: 0,0:04:12.36,0:04:14.23,Main-207-,,0,0,0,,ship.
+Dialogue: 0,0:04:14.73,0:04:16.27,Main-207-,,0,0,0,,And just who made you captain?
+Dialogue: 0,0:04:16.31,0:04:17.89,Main-207-,,0,0,0,,Why do you get to give all the orders?
+Dialogue: 0,0:04:18.75,0:04:19.29,Main-207-,,0,0,0,,Back off.
+Dialogue: 0,0:04:20.03,0:04:22.29,Main-207-,,0,0,0,,I may not be the captain, but who else is\Ngoing to do it?
+Dialogue: 0,0:04:22.66,0:04:24.48,Main-207-,,0,0,0,,Look, all of them are kind of short.
+Dialogue: 0,0:04:24.50,0:04:25.36,Main-207-,,0,0,0,,Why don't you draw three?
+Dialogue: 0,0:04:25.38,0:04:26.68,Main-207-,,0,0,0,,You're only supposed to take one.
+Dialogue: 0,0:04:27.06,0:04:29.24,Main-207-,,0,0,0,,I thought the person who grabs the most is\Nthe winner.
+Dialogue: 0,0:04:30.52,0:04:33.43,Main-207-,,0,0,0,,I don't think further explanation on this\Nsubject is necessary.
+Dialogue: 0,0:04:33.49,0:04:33.97,Main-207-,,0,0,0,,Do you?
+Dialogue: 0,0:04:34.57,0:04:36.17,Main-207-,,0,0,0,,Not at all.
+Dialogue: 0,0:04:36.63,0:04:37.07,Main-207-,,0,0,0,,I know.
+Dialogue: 0,0:04:37.27,0:04:38.39,Main-207-,,0,0,0,,Am I great or what?
+Dialogue: 0,0:04:38.51,0:04:38.95,Main-207-,,0,0,0,,You idiot!
+Dialogue: 0,0:04:41.08,0:04:42.41,Main-207-,,0,0,0,,I drew the long one, so. ..
+Dialogue: 0,0:04:42.81,0:04:43.89,Main-207-,,0,0,0,,I stay and watch the ship?
+Dialogue: 0,0:04:44.15,0:04:44.71,Main-207-,,0,0,0,,That's right!
+Dialogue: 0,0:04:44.89,0:04:46.87,Main-207-,,0,0,0,,Just make sure to keep her in one piece,\Nokay?
+Dialogue: 0,0:04:46.91,0:04:48.07,Main-207-,,0,0,0,,Hurry up, hurry up, let's go!
+Dialogue: 0,0:04:48.09,0:04:49.79,Main-207-,,0,0,0,,There's lots of fruit waiting to be\Npicked!
+Dialogue: 0,0:04:50.53,0:04:52.27,Main-207-,,0,0,0,,You're coming with us, Nami, right?
+Dialogue: 0,0:04:52.33,0:04:52.95,Main-207-,,0,0,0,,No thanks.
+Dialogue: 0,0:04:53.05,0:04:55.77,Main-207-,,0,0,0,,While you guys are gathering supplies, I'm\Ngoing to spend the day measuring the
+Dialogue: 0,0:04:55.77,0:04:58.49,Main-207-,,0,0,0,,island, so I'll be able to add it to our\Nsea charts.
+Dialogue: 0,0:04:58.73,0:05:00.49,Main-207-,,0,0,0,,Now let's get to work!
+Dialogue: 0,0:05:01.55,0:05:02.71,Main-207-,,0,0,0,,Be careful!
+Dialogue: 0,0:05:03.03,0:05:04.36,Main-207-,,0,0,0,,See you guys later!
+Dialogue: 0,0:05:04.52,0:05:05.76,Main-207-,,0,0,0,,Have a good one!
+Dialogue: 0,0:05:05.92,0:05:06.76,Main-207-,,0,0,0,,You too!
+Dialogue: 0,0:05:06.92,0:05:08.10,Main-207-,,0,0,0,,Look after the ship!
+Dialogue: 0,0:05:08.16,0:05:10.52,Main-207-,,0,0,0,,The one who collects the most fruit is the\Nwinner!
+Dialogue: 0,0:05:11.42,0:05:13.24,Main-207-,,0,0,0,,Going to be a long day.
+Dialogue: 0,0:05:14.80,0:05:16.40,Main-207-,,0,0,0,,All right, it's time.
+Dialogue: 0,0:05:16.44,0:05:17.93,Main-207-,,0,0,0,,Measuring, measuring.
+Dialogue: 0,0:05:18.35,0:05:21.45,Main-207-,,0,0,0,,Oh, how lively Nami is when she's taking\Nmeasurements.
+Dialogue: 0,0:05:21.47,0:05:23.91,Main-207-,,0,0,0,,The tools on her back glistening in the\Nsunlight.
+Dialogue: 0,0:05:23.93,0:05:26.69,Main-207-,,0,0,0,,Stop acting stupid and catch up already.
+Dialogue: 0,0:05:29.61,0:05:32.48,Main-207-,,0,0,0,,I'm all alone today.
+Dialogue: 0,0:05:33.70,0:05:36.30,Main-207-,,0,0,0,,The ship looks really big, especially when\Nno one's around.
+Dialogue: 0,0:05:47.51,0:05:48.71,Main-207-,,0,0,0,,Listen up, guys.
+Dialogue: 0,0:05:49.21,0:05:51.27,Main-207-,,0,0,0,,Today I am in charge of the Going Merry.
+Dialogue: 0,0:05:51.31,0:05:52.81,Main-207-,,0,0,0,,That's Captain Chopper to you.
+Dialogue: 0,0:05:53.65,0:05:55.66,Main-207-,,0,0,0,,And remember, I'm the law.
+Dialogue: 0,0:05:55.76,0:05:57.94,Main-207-,,0,0,0,,Lopi, don't eat food that doesn't belong\Nto you.
+Dialogue: 0,0:05:58.40,0:06:00.46,Main-207-,,0,0,0,,Usopp, you need to work harder and no\Nexcuses.
+Dialogue: 0,0:06:00.50,0:06:04.18,Main-207-,,0,0,0,,Sanji, prepare special dishes to satisfy\Nmy every craving.
+Dialogue: 0,0:06:04.42,0:06:05.14,Main-207-,,0,0,0,,Hail me!
+Dialogue: 0,0:06:05.40,0:06:05.58,Main-207-,,0,0,0,,Hurrah!
+Dialogue: 0,0:06:25.90,0:06:27.38,Main-207-,,0,0,0,,How long have you been sitting there, huh?
+Dialogue: 0,0:06:27.72,0:06:29.64,Main-207-,,0,0,0,,Being so quiet, very sneaky.
+Dialogue: 0,0:06:30.38,0:06:31.55,Main-207-,,0,0,0,,You, you spy!
+Dialogue: 0,0:06:31.57,0:06:32.89,Main-207-,,0,0,0,,I still don't trust you.
+Dialogue: 0,0:06:32.95,0:06:35.13,Main-207-,,0,0,0,,I see what you're doing and I'm not fooled\Nfor a second.
+Dialogue: 0,0:06:35.45,0:06:37.85,Main-207-,,0,0,0,,You were a Baroque Works officer agent.
+Dialogue: 0,0:06:38.57,0:06:41.96,Main-207-,,0,0,0,,You've been nothing but a selfish rogue\Nall your life, mean and stupid.
+Dialogue: 0,0:06:42.12,0:06:45.72,Main-207-,,0,0,0,,I won't accept you as a crewman, not even\Nif Luffy himself vouched for you.
+Dialogue: 0,0:06:46.30,0:06:46.96,Main-207-,,0,0,0,,Monster!
+Dialogue: 0,0:06:53.34,0:06:55.20,Main-207-,,0,0,0,,Her special skill is assassination, right?
+Dialogue: 0,0:06:55.22,0:06:57.22,Main-207-,,0,0,0,,I hear she's also very smart.
+Dialogue: 0,0:06:57.58,0:06:58.62,Main-207-,,0,0,0,,Need to be careful.
+Dialogue: 0,0:07:02.52,0:07:03.99,Main-207-,,0,0,0,,That's right, I almost forgot.
+Dialogue: 0,0:07:04.01,0:07:06.63,Main-207-,,0,0,0,,Before I went to bed last night, I made\Nten rumble balls.
+Dialogue: 0,0:07:07.35,0:07:10.71,Main-207-,,0,0,0,,I'll spend the rest of the day making\Nmore, quietly, safe and sound.
+Dialogue: 0,0:07:11.59,0:07:12.57,Main-207-,,0,0,0,,Good old rumble balls.
+Dialogue: 0,0:07:12.59,0:07:14.55,Main-207-,,0,0,0,,I have to make them whenever I can, since\Nthere's no telling when we might run into
+Dialogue: 0,0:07:14.55,0:07:16.52,Main-207-,,0,0,0,,enemies.
+Dialogue: 0,0:07:21.46,0:07:26.41,Main-207-,,0,0,0,,Still, this takes me back to when I made\Nmy first rumble ball.
+Dialogue: 0,0:07:31.52,0:07:34.58,Main-207-,,0,0,0,,Don't think Dr. Eam will notice that these\Nget reduced little by little.
+Dialogue: 0,0:07:35.68,0:07:38.32,Main-207-,,0,0,0,,She always mixes a little bit of this and\Nthis, right?
+Dialogue: 0,0:07:39.02,0:07:40.80,Main-207-,,0,0,0,,Or was it this one?
+Dialogue: 0,0:07:40.86,0:07:42.46,Main-207-,,0,0,0,,She didn't put this one in, did she?
+Dialogue: 0,0:07:42.88,0:07:43.54,Main-207-,,0,0,0,,Chopper?
+Dialogue: 0,0:07:44.00,0:07:46.26,Main-207-,,0,0,0,,Do you know where my medicine bottles are?
+Dialogue: 0,0:07:46.62,0:07:48.32,Main-207-,,0,0,0,,They have important ingredients in them.
+Dialogue: 0,0:07:48.56,0:07:50.85,Main-207-,,0,0,0,,They're very rare and valuable medicines.
+Dialogue: 0,0:07:51.09,0:07:53.15,Main-207-,,0,0,0,,I'd better not find that you've been\Nplaying with them.
+Dialogue: 0,0:07:53.31,0:07:55.03,Main-207-,,0,0,0,,Do you hear me?
+Dialogue: 0,0:07:56.57,0:07:57.33,Main-207-,,0,0,0,,Chopper?
+Dialogue: 0,0:08:13.85,0:08:17.03,Main-207-,,0,0,0,,Then I received a good scolding from\NDoctorine that I'll never forget.
+Dialogue: 0,0:08:17.05,0:08:25.94,Main-207-,,0,0,0,,I wonder how Doctorine is getting along\Nthese days.
+Dialogue: 0,0:08:25.96,0:08:27.66,Main-207-,,0,0,0,,I think I'll write her a letter.
+Dialogue: 0,0:08:31.36,0:08:33.73,Main-207-,,0,0,0,,So, they're called Rumble Balls, right?
+Dialogue: 0,0:08:39.18,0:08:41.78,Main-207-,,0,0,0,,You're trying to uncover the secret of the\NRumble Ball, aren't you?
+Dialogue: 0,0:08:42.18,0:08:44.34,Main-207-,,0,0,0,,And once you get it, you're going to\Nassassinate me!
+Dialogue: 0,0:08:44.60,0:08:45.88,Main-207-,,0,0,0,,But that's not going to happen.
+Dialogue: 0,0:08:46.16,0:08:48.30,Main-207-,,0,0,0,,I won't be taken down by a snake like you!
+Dialogue: 0,0:08:48.32,0:08:49.60,Main-207-,,0,0,0,,Rumble!
+Dialogue: 0,0:08:50.24,0:08:52.89,Main-207-,,0,0,0,,Guard point!
+Dialogue: 0,0:08:58.13,0:09:01.97,Main-207-,,0,0,0,,And now, heavy point!
+Dialogue: 0,0:09:03.57,0:09:07.09,Main-207-,,0,0,0,,Jumping point!
+Dialogue: 0,0:09:07.47,0:09:11.38,Main-207-,,0,0,0,,Burn point!
+Dialogue: 0,0:09:11.72,0:09:14.48,Main-207-,,0,0,0,,See the power of the rumble ball!
+Dialogue: 0,0:09:14.50,0:09:16.26,Main-207-,,0,0,0,,You are no match for the rumble ball.
+Dialogue: 0,0:09:16.30,0:09:18.98,Main-207-,,0,0,0,,It can give me the ability to find your\Nweak point.
+Dialogue: 0,0:09:19.08,0:09:20.78,Main-207-,,0,0,0,,Brain point, wide scope!
+Dialogue: 0,0:09:20.98,0:09:22.82,Main-207-,,0,0,0,,Point?
+Dialogue: 0,0:09:22.90,0:09:23.52,Main-207-,,0,0,0,,Point?
+Dialogue: 0,0:09:24.38,0:09:25.56,Main-207-,,0,0,0,,Where's her weak point?
+Dialogue: 0,0:09:28.79,0:09:30.17,Main-207-,,0,0,0,,Hey, what do you find so funny?
+Dialogue: 0,0:09:30.37,0:09:31.77,Main-207-,,0,0,0,,Look, there's no need to be afraid.
+Dialogue: 0,0:09:31.81,0:09:32.85,Main-207-,,0,0,0,,I'm not going to hurt you.
+Dialogue: 0,0:09:33.19,0:09:35.31,Main-207-,,0,0,0,,Hey, stop it!
+Dialogue: 0,0:09:36.17,0:09:37.96,Main-207-,,0,0,0,,Stop it!
+Dialogue: 0,0:09:38.18,0:09:40.94,Main-207-,,0,0,0,,Stop tickling me!
+Dialogue: 0,0:09:41.02,0:09:43.80,Main-207-,,0,0,0,,Aren't you just the cutest furball?
+Dialogue: 0,0:09:44.44,0:09:45.32,Main-207-,,0,0,0,,I do like you.
+Dialogue: 0,0:09:46.83,0:09:47.03,Main-207-,,0,0,0,,Cutest?
+Dialogue: 0,0:09:47.33,0:09:48.43,Main-207-,,0,0,0,,Give me a break!
+Dialogue: 0,0:09:48.79,0:09:51.11,Main-207-,,0,0,0,,I'm not falling for your flattery!
+Dialogue: 0,0:09:51.19,0:09:54.59,Main-207-,,0,0,0,,Think by making me happy it'll throw me\Noff guard or something?
+Dialogue: 0,0:09:54.65,0:09:55.01,Main-207-,,0,0,0,,Come on!
+Dialogue: 0,0:09:55.03,0:09:55.83,Main-207-,,0,0,0,,Do I look happy to you?
+Dialogue: 0,0:09:55.85,0:09:56.47,Main-207-,,0,0,0,,Can't fool me!
+Dialogue: 0,0:09:56.49,0:09:57.01,Main-207-,,0,0,0,,I gotcha!
+Dialogue: 0,0:09:57.31,0:09:57.61,Main-207-,,0,0,0,,I'm in!
+Dialogue: 0,0:09:57.69,0:09:58.67,Main-207-,,0,0,0,,I'm wise to your day!
+Dialogue: 0,0:09:58.69,0:09:59.51,Main-207-,,0,0,0,,Well then, shall we go?
+Dialogue: 0,0:10:00.27,0:10:02.37,Main-207-,,0,0,0,,Don't we need to refill the water you just\Nwasted?
+Dialogue: 0,0:10:04.09,0:10:05.65,Main-207-,,0,0,0,,I like to drink a cup of coffee.
+Dialogue: 0,0:10:06.24,0:10:08.06,Main-207-,,0,0,0,,On deck while reading.
+Dialogue: 0,0:10:08.52,0:10:09.26,Main-207-,,0,0,0,,What's the matter?
+Dialogue: 0,0:10:09.54,0:10:11.44,Main-207-,,0,0,0,,It's only fair that you go draw the water\Nsince you're the one who spilt it in the
+Dialogue: 0,0:10:11.44,0:10:13.34,Main-207-,,0,0,0,,first place.
+Dialogue: 0,0:10:13.84,0:10:14.16,Main-207-,,0,0,0,,Yes!
+Dialogue: 0,0:10:18.95,0:10:23.68,Main-207-,,0,0,0,,Geez, how could I even contemplate working\Non such a beautiful day like this?
+Dialogue: 0,0:10:23.82,0:10:25.82,Main-207-,,0,0,0,,Whoa, lots of monkeys.
+Dialogue: 0,0:10:25.96,0:10:26.22,Main-207-,,0,0,0,,Ooh!
+Dialogue: 0,0:10:52.64,0:10:53.32,Main-207-,,0,0,0,,He got me.
+Dialogue: 0,0:10:54.62,0:10:56.30,Main-207-,,0,0,0,,My life flashed before my eyes.
+Dialogue: 0,0:10:56.70,0:10:57.66,Main-207-,,0,0,0,,I thought that was it.
+Dialogue: 0,0:10:58.36,0:10:59.80,Main-207-,,0,0,0,,The end of Captain Osop.
+Dialogue: 0,0:11:00.10,0:11:01.24,Main-207-,,0,0,0,,No more adventures.
+Dialogue: 0,0:11:01.59,0:11:04.87,Main-207-,,0,0,0,,I didn't get a good look at what attacked\Nme, but it must have been a huge condor.
+Dialogue: 0,0:11:05.49,0:11:06.01,Main-207-,,0,0,0,,Why me?
+Dialogue: 0,0:11:06.47,0:11:09.63,Main-207-,,0,0,0,,Because I had to fight for my life, I\Ncouldn't gather a single piece of fruit.
+Dialogue: 0,0:11:09.91,0:11:10.33,Main-207-,,0,0,0,,Oh, well.
+Dialogue: 0,0:11:11.07,0:11:11.77,Main-207-,,0,0,0,,That's okay.
+Dialogue: 0,0:11:12.11,0:11:13.85,Main-207-,,0,0,0,,No need for anyone to worry about me.
+Dialogue: 0,0:11:15.23,0:11:15.57,Main-207-,,0,0,0,,Again.
+Dialogue: 0,0:11:15.85,0:11:17.64,Main-207-,,0,0,0,,I wish somebody would give me a good\Nexplanation why I have to take orders from that
+Dialogue: 0,0:11:17.64,0:11:19.44,Main-207-,,0,0,0,,woman.
+Dialogue: 0,0:11:19.90,0:11:23.66,Main-207-,,0,0,0,,Seriously, she's going to drive me insane.
+Dialogue: 0,0:11:23.68,0:11:27.21,Main-207-,,0,0,0,,Three sword style. .. Dragon. .. Twister!
+Dialogue: 0,0:11:47.43,0:11:48.61,Main-207-,,0,0,0,,Where's the contour line?
+Dialogue: 0,0:11:48.91,0:11:49.59,Main-207-,,0,0,0,,That's it!
+Dialogue: 0,0:11:52.15,0:11:54.75,Main-207-,,0,0,0,,The right ridgeline is right around 42\Ndegrees.
+Dialogue: 0,0:11:55.03,0:11:56.40,Main-207-,,0,0,0,,What a coincidence!
+Dialogue: 0,0:11:56.82,0:12:01.08,Main-207-,,0,0,0,,If you measured my love for you, it would\Nbe exactly 42 degrees Celsius!
+Dialogue: 0,0:12:01.92,0:12:06.06,Main-207-,,0,0,0,,Move it, moron!
+Dialogue: 0,0:12:14.55,0:12:16.49,Main-207-,,0,0,0,,I'm the one who's gotta fetch the water.
+Dialogue: 0,0:12:17.29,0:12:22.07,Main-207-,,0,0,0,,Why is she tagging along?
+Dialogue: 0,0:12:22.11,0:12:23.13,Main-207-,,0,0,0,,What a nice day.
+Dialogue: 0,0:12:23.15,0:12:25.87,Main-207-,,0,0,0,,What? !
+Dialogue: 0,0:12:25.91,0:12:27.09,Main-207-,,0,0,0,,You scared me to death!
+Dialogue: 0,0:12:27.17,0:12:27.93,Main-207-,,0,0,0,,What's wrong? !
+Dialogue: 0,0:12:28.03,0:12:28.43,Main-207-,,0,0,0,,Nothing.
+Dialogue: 0,0:12:28.95,0:12:29.73,Main-207-,,0,0,0,,Just commenting.
+Dialogue: 0,0:12:30.49,0:12:31.47,Main-207-,,0,0,0,,On a beautiful day.
+Dialogue: 0,0:12:32.31,0:12:34.05,Main-207-,,0,0,0,,I've been longing to take a walk like\Nthis.
+Dialogue: 0,0:12:34.77,0:12:36.81,Main-207-,,0,0,0,,I haven't felt such peace for quite some\Ntime.
+Dialogue: 0,0:12:46.31,0:12:48.39,Main-207-,,0,0,0,,In the past, it seemed like I was always\Nwound too tight from repressing my
+Dialogue: 0,0:12:48.39,0:12:50.47,Main-207-,,0,0,0,,emotions.
+Dialogue: 0,0:12:50.87,0:12:52.33,Main-207-,,0,0,0,,I never got the chance to smile.
+Dialogue: 0,0:13:20.58,0:13:23.01,Main-207-,,0,0,0,,So, um, if I remember the story correctly,\Ndidn't you say you've been alone since
+Dialogue: 0,0:13:23.01,0:13:25.44,Main-207-,,0,0,0,,you were eight or so?
+Dialogue: 0,0:13:25.84,0:13:26.38,Main-207-,,0,0,0,,That's right.
+Dialogue: 0,0:13:27.16,0:13:30.10,Main-207-,,0,0,0,,I spent most of my youth following\Npirates, and I barely survived.
+Dialogue: 0,0:13:33.44,0:13:34.18,Main-207-,,0,0,0,,It's your turn.
+Dialogue: 0,0:13:34.58,0:13:36.62,Main-207-,,0,0,0,,Tell me about this Dr. Rean person.
+Dialogue: 0,0:13:36.82,0:13:38.36,Main-207-,,0,0,0,,You were talking about her earlier.
+Dialogue: 0,0:13:38.82,0:13:39.83,Main-207-,,0,0,0,,She's a doctor, right?
+Dialogue: 0,0:13:40.23,0:13:41.09,Main-207-,,0,0,0,,She's your teacher.
+Dialogue: 0,0:13:41.45,0:13:42.31,Main-207-,,0,0,0,,A mentor, perhaps?
+Dialogue: 0,0:13:43.01,0:13:44.41,Main-207-,,0,0,0,,Uh, yeah, kind of.
+Dialogue: 0,0:13:44.97,0:13:47.05,Main-207-,,0,0,0,,Dr. Rean is someone I owe a great debt to.
+Dialogue: 0,0:13:47.49,0:13:49.63,Main-207-,,0,0,0,,Most people refer to her as Dr. Kureha.
+Dialogue: 0,0:13:50.56,0:13:53.02,Main-207-,,0,0,0,,Dr. Pereja, what is she like?
+Dialogue: 0,0:13:53.42,0:13:55.83,Main-207-,,0,0,0,,She really loves alcohol, but the best way\Nto describe her is a woman who's like a
+Dialogue: 0,0:13:55.83,0:13:58.24,Main-207-,,0,0,0,,pirate who's also a doctor.
+Dialogue: 0,0:13:58.28,0:13:59.96,Main-207-,,0,0,0,,Did I mention she really loves alcohol?
+Dialogue: 0,0:14:05.03,0:14:07.33,Main-207-,,0,0,0,,I studied under Dr. Ian for about six\Nyears.
+Dialogue: 0,0:14:07.35,0:14:09.51,Main-207-,,0,0,0,,I wanted to be a doctor myself, you know.
+Dialogue: 0,0:14:09.53,0:14:10.53,Main-207-,,0,0,0,,That was my passion.
+Dialogue: 0,0:14:14.95,0:14:19.40,Main-207-,,0,0,0,,After mixing these three types of herbs\Ntogether in a large bowl, grind them well.
+Dialogue: 0,0:14:21.68,0:14:22.38,Main-207-,,0,0,0,,Chopper!
+Dialogue: 0,0:14:24.86,0:14:26.18,Main-207-,,0,0,0,,Are you finished with your reading?
+Dialogue: 0,0:14:26.60,0:14:28.82,Main-207-,,0,0,0,,I expect all 500 pages memorized.
+Dialogue: 0,0:14:33.23,0:14:35.17,Main-207-,,0,0,0,,You were playing around with my medicines\Nagain.
+Dialogue: 0,0:14:35.19,0:14:37.21,Main-207-,,0,0,0,,No, I was experimenting.
+Dialogue: 0,0:14:37.75,0:14:38.99,Main-207-,,0,0,0,,That's the same as playing.
+Dialogue: 0,0:14:41.36,0:14:42.54,Main-207-,,0,0,0,,No excuses.
+Dialogue: 0,0:14:42.84,0:14:46.04,Main-207-,,0,0,0,,But I've been studying for three years\Nnow, Dr. Correja.
+Dialogue: 0,0:14:46.30,0:14:49.04,Main-207-,,0,0,0,,I've read and re-read over 200 medical\Nbooks and journals.
+Dialogue: 0,0:14:49.14,0:14:50.86,Main-207-,,0,0,0,,Please let me help prepare the medicine.
+Dialogue: 0,0:14:50.88,0:14:52.66,Main-207-,,0,0,0,,You're about a hundred years from that.
+Dialogue: 0,0:14:53.28,0:15:00.29,Main-207-,,0,0,0,,I've memorized every single word that I've\Never read.
+Dialogue: 0,0:15:00.35,0:15:01.01,Main-207-,,0,0,0,,It's true.
+Dialogue: 0,0:15:01.07,0:15:01.83,Main-207-,,0,0,0,,I swear it.
+Dialogue: 0,0:15:01.87,0:15:05.81,Main-207-,,0,0,0,,I even managed to memorize the seventh\Nprinciple by Dr. Alexandra, cover to cover.
+Dialogue: 0,0:15:05.83,0:15:08.59,Main-207-,,0,0,0,,That's the one you said was the most\Ndifficult book you ever read.
+Dialogue: 0,0:15:08.89,0:15:10.25,Main-207-,,0,0,0,,So, what does.
+Dialogue: 0,0:15:20.01,0:15:20.61,Main-207-,,0,0,0,,You okay?
+Dialogue: 0,0:15:20.87,0:15:22.99,Main-207-,,0,0,0,,It seems I've been infected with the\Nfebrile disease from the patient I saw the
+Dialogue: 0,0:15:22.99,0:15:25.11,Main-207-,,0,0,0,,other day.
+Dialogue: 0,0:15:25.13,0:15:28.14,Main-207-,,0,0,0,,You're burning up!
+Dialogue: 0,0:15:28.20,0:15:30.79,Main-207-,,0,0,0,,Chopper, anyone can memorize words, but\Nnow you must put what you've learned to the
+Dialogue: 0,0:15:30.79,0:15:33.38,Main-207-,,0,0,0,,test.
+Dialogue: 0,0:15:35.12,0:15:37.74,Main-207-,,0,0,0,,I guess this will make me your very first\Npatient.
+Dialogue: 0,0:15:39.74,0:15:41.70,Main-207-,,0,0,0,,I won't give you a single word of advice.
+Dialogue: 0,0:15:42.12,0:15:42.98,Main-207-,,0,0,0,,You're on your own.
+Dialogue: 0,0:15:43.58,0:15:45.18,Main-207-,,0,0,0,,If you fail, I'll die.
+Dialogue: 0,0:15:45.72,0:15:46.40,Main-207-,,0,0,0,,No pressure.
+Dialogue: 0,0:15:47.68,0:15:49.02,Main-207-,,0,0,0,,Learn the ultimate lesson.
+Dialogue: 0,0:15:49.58,0:15:52.21,Main-207-,,0,0,0,,Once you decide to practice medicine, you\Ntake the responsibility of your
+Dialogue: 0,0:15:52.21,0:15:54.84,Main-207-,,0,0,0,,patients'lives in your hooves.
+Dialogue: 0,0:15:55.14,0:15:57.75,Main-207-,,0,0,0,,Can a blue-nosed reindeer master such a\Nburden?
+Dialogue: 0,0:16:20.79,0:16:21.55,Main-207-,,0,0,0,,There's no mistake.
+Dialogue: 0,0:16:21.59,0:16:23.75,Main-207-,,0,0,0,,This is the pathogen of the mandolin\Nvirus.
+Dialogue: 0,0:16:23.99,0:16:26.82,Main-207-,,0,0,0,,What would work best to counteract it?
+Dialogue: 0,0:16:27.86,0:16:28.86,Main-207-,,0,0,0,,Found it!
+Dialogue: 0,0:16:29.28,0:16:33.80,Main-207-,,0,0,0,,Dr. Rean.
+Dialogue: 0,0:16:35.96,0:16:36.72,Main-207-,,0,0,0,,Don't die.
+Dialogue: 0,0:16:37.83,0:16:46.07,Main-207-,,0,0,0,,Please.
+Dialogue: 0,0:16:46.09,0:16:46.81,Main-207-,,0,0,0,,Let's see.
+Dialogue: 0,0:16:49.51,0:16:52.83,Main-207-,,0,0,0,,Dr. Kureha, aren't you going to ask what\Nsort of ingredients I combine?
+Dialogue: 0,0:16:53.05,0:16:56.95,Main-207-,,0,0,0,,Most patients will have little knowledge\Nof medicine or what is used to compound it.
+Dialogue: 0,0:16:57.33,0:16:59.48,Main-207-,,0,0,0,,They simply trust their doctor's judgment\Nand abide by whatever prescription he
+Dialogue: 0,0:16:59.48,0:17:01.63,Main-207-,,0,0,0,,gives them.
+Dialogue: 0,0:17:02.55,0:17:04.52,Main-207-,,0,0,0,,Alright, do you feel a little better?
+Dialogue: 0,0:17:04.66,0:17:07.42,Main-207-,,0,0,0,,Dummy, no medicine works instantaneously.
+Dialogue: 0,0:17:08.24,0:17:10.00,Main-207-,,0,0,0,,Go, I need to sleep for a while.
+Dialogue: 0,0:17:13.32,0:17:13.90,Main-207-,,0,0,0,,Chopper!
+Dialogue: 0,0:17:15.24,0:17:18.32,Main-207-,,0,0,0,,Not a bad job, considering your lack of\Nexperience.
+Dialogue: 0,0:17:21.72,0:17:25.44,Main-207-,,0,0,0,,That was the first time that Dr. Ian truly\Npraised my aptitude in medicine.
+Dialogue: 0,0:17:26.24,0:17:29.10,Main-207-,,0,0,0,,And it was the only time throughout the\Nsix years I worked under her.
+Dialogue: 0,0:17:30.62,0:17:33.15,Main-207-,,0,0,0,,Instead of giving me verbal acknowledgements,\Nshe proved her faith in me by placing
+Dialogue: 0,0:17:33.15,0:17:35.69,Main-207-,,0,0,0,,her life in my hands.
+Dialogue: 0,0:17:36.09,0:17:37.27,Main-207-,,0,0,0,,That's Dr. Ian for you.
+Dialogue: 0,0:17:37.57,0:17:39.19,Main-207-,,0,0,0,,She believes in actions, not words.
+Dialogue: 0,0:17:39.85,0:17:40.83,Main-207-,,0,0,0,,And I agree with her.
+Dialogue: 0,0:17:41.51,0:17:44.85,Main-207-,,0,0,0,,Someday I'll become a great doctor, one\Nthat'll surprise even her!
+Dialogue: 0,0:17:49.98,0:17:50.50,Main-207-,,0,0,0,,Oh no!
+Dialogue: 0,0:17:51.00,0:17:52.80,Main-207-,,0,0,0,,I think I said too much!
+Dialogue: 0,0:17:53.66,0:17:54.04,Main-207-,,0,0,0,,Hey!
+Dialogue: 0,0:17:54.36,0:17:55.62,Main-207-,,0,0,0,,The sun will be setting soon.
+Dialogue: 0,0:17:55.66,0:17:56.20,Main-207-,,0,0,0,,We should go.
+Dialogue: 0,0:17:58.46,0:18:01.35,Main-207-,,0,0,0,,I wish I had someone in my life who I had\Na strong connection with.
+Dialogue: 0,0:18:01.89,0:18:02.79,Main-207-,,0,0,0,,Just like you do.
+Dialogue: 0,0:18:07.89,0:18:10.39,Main-207-,,0,0,0,,This is really. .. Heavy. ..
+Dialogue: 0,0:18:22.39,0:18:22.97,Main-207-,,0,0,0,,Go on.
+Dialogue: 0,0:18:23.43,0:18:26.79,Main-207-,,0,0,0,,Explain to me why you weren't able to\Ngather so much as a single piece of fruit.
+Dialogue: 0,0:18:26.81,0:18:29.05,Main-207-,,0,0,0,,That's a good question.
+Dialogue: 0,0:18:29.09,0:18:29.98,Main-207-,,0,0,0,,What's your answer?
+Dialogue: 0,0:18:31.12,0:18:32.34,Main-207-,,0,0,0,,I thought I was being attacked.
+Dialogue: 0,0:18:32.66,0:18:35.70,Main-207-,,0,0,0,,By a huge condor who was trying to claw my\Nface off!
+Dialogue: 0,0:18:36.30,0:18:37.30,Main-207-,,0,0,0,,Sorry, I failed you.
+Dialogue: 0,0:18:37.87,0:18:41.25,Main-207-,,0,0,0,,I tried my best, I really did, but I guess\Nin the end it wasn't good enough.
+Dialogue: 0,0:18:41.57,0:18:42.65,Main-207-,,0,0,0,,And now I'm dead.
+Dialogue: 0,0:18:43.47,0:18:45.63,Main-207-,,0,0,0,,I have to hand it to you, Zoro.
+Dialogue: 0,0:18:45.65,0:18:47.05,Main-207-,,0,0,0,,You did an impressive job today.
+Dialogue: 0,0:18:47.99,0:18:50.70,Main-207-,,0,0,0,,So impressive that you should just keep\Nworking the rest of the night.
+Dialogue: 0,0:18:52.30,0:18:55.02,Main-207-,,0,0,0,,How lovable Nami is, even when she's\Nyelling at everyone.
+Dialogue: 0,0:18:55.68,0:18:56.38,Main-207-,,0,0,0,,Oh, shut up!
+Dialogue: 0,0:18:56.56,0:18:57.56,Main-207-,,0,0,0,,You're a moron!
+Dialogue: 0,0:18:57.58,0:18:59.04,Main-207-,,0,0,0,,You want some of me, moss head?
+Dialogue: 0,0:18:59.50,0:19:02.56,Main-207-,,0,0,0,,You two calm down.
+Dialogue: 0,0:19:04.50,0:19:10.03,Main-207-,,0,0,0,,Oh, I can't remember the last time we had\Na nice, peaceful day like this.
+Dialogue: 0,0:19:10.23,0:19:13.43,Main-207-,,0,0,0,,Hey, Chopper, was it tough being alone all\Nday on the ship?
+Dialogue: 0,0:19:13.75,0:19:14.21,Main-207-,,0,0,0,,Kind of.
+Dialogue: 0,0:19:14.73,0:19:15.57,Main-207-,,0,0,0,,It was a chore.
+Dialogue: 0,0:19:20.63,0:19:22.81,Main-207-,,0,0,0,,But way more fun than I've had in a long\Ntime.
