@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
+DEFAULT_STYLE_REFERENCE = (PROJECT_ROOT / "input" / "alabasta 18 en.ass").resolve()
 DEFAULT_TERMS_PLACEHOLDER = "@DEFAULT_TERMS_FILE@"
 DEFAULT_LD_LIBRARY_PATH_PLACEHOLDER = "@DEFAULT_LD_LIBRARY_PATH@"
 
@@ -343,6 +345,24 @@ def maybe_extract_reference_ass(input_video: str, temp_dir: str, env: dict[str, 
     return reference_path if Path(reference_path).is_file() else None
 
 
+def resolve_style_reference_ass(
+    input_video: str,
+    temp_dir: str,
+    env: dict[str, str],
+    explicit_reference: str | None,
+) -> str | None:
+    if explicit_reference:
+        ref_path = Path(explicit_reference).expanduser().resolve()
+        if ref_path.is_file():
+            return str(ref_path)
+        die(f"Style reference ASS not found: {ref_path}")
+
+    if DEFAULT_STYLE_REFERENCE.is_file():
+        return str(DEFAULT_STYLE_REFERENCE)
+
+    return maybe_extract_reference_ass(input_video, temp_dir, env)
+
+
 def collect_font_attachments(fonts_dir: Path) -> list[str]:
     if not fonts_dir.is_dir():
         return []
@@ -366,6 +386,7 @@ def mux_subtitles(input_video: str, input_subs: str, output_mkv: str, env: dict[
             attached_count = len(attachment_args) // 2
             log(f"Attaching {attached_count} font files from {fonts_dir}")
 
+            Path(output_mkv).parent.mkdir(parents=True, exist_ok=True)
     log(f"Muxing subtitles into {Path(output_mkv).name}")
     run_command(
         [
@@ -409,6 +430,7 @@ def parse_args() -> argparse.Namespace:
     run_cmd.add_argument("--language", default="en")
     run_cmd.add_argument("--track-index", type=int)
     run_cmd.add_argument("--output-dir")
+    run_cmd.add_argument("--style-reference-ass")
     run_cmd.add_argument("--no-mux", action="store_true")
     run_cmd.add_argument("--mux", action="store_true")
     run_cmd.add_argument("--keep-audio", action="store_true")
@@ -468,7 +490,7 @@ def main() -> None:
         input_path = Path(input_video)
 
         # Keep final subtitle artifacts in a top-level subtitles folder by default.
-        subtitle_root = Path(args.output_dir).resolve() if args.output_dir else (PROJECT_ROOT / "subtitles").resolve()
+        subtitle_root = Path(args.output_dir).resolve() if args.output_dir else (PROJECT_ROOT / "output" / "subtitles").resolve()
         subtitle_root.mkdir(parents=True, exist_ok=True)
 
         base_name = stem_for(input_video)
@@ -479,8 +501,10 @@ def main() -> None:
         ass_output = str(ass_output_path)
 
         media_symlink_path = input_path.with_suffix(".ass")
-        muxed_output = str(input_path.resolve().parent / f"{base_name}.with-subs.mkv")
-        fonts_dir = PROJECT_ROOT / "media" / "fonts"
+        mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", input_path.stem)
+        mux_output_dir = (PROJECT_ROOT / "output" / base_name).resolve()
+        muxed_output = str((mux_output_dir / f"{mux_base_name}.mkv").resolve())
+        fonts_dir = PROJECT_ROOT / "output" / "fonts"
 
         with tempfile.TemporaryDirectory() as tmp:
             extracted_audio = str(Path(tmp) / f"{base_name}.wav")
@@ -501,7 +525,12 @@ def main() -> None:
             normalize_srt(raw_srt, normalized_srt, terms_file, env)
             style_srt(normalized_srt, normalized_srt, terms_file, env)
 
-            style_reference_ass = maybe_extract_reference_ass(input_video, tmp, env)
+            style_reference_ass = resolve_style_reference_ass(
+                input_video,
+                tmp,
+                env,
+                args.style_reference_ass,
+            )
             if style_reference_ass:
                 log(f"Using MKV subtitle style reference: {Path(style_reference_ass).name}")
 
@@ -567,8 +596,9 @@ def main() -> None:
         return
 
     if args.command == "mux":
-        output_mkv = args.output_mkv or str(Path(args.input_video).with_name(f"{stem_for(args.input_video)}.with-subs.mkv"))
-        mux_subtitles(args.input_video, args.input_subs, output_mkv, env, fonts_dir=PROJECT_ROOT / "media" / "fonts")
+        mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", stem_for(args.input_video))
+        output_mkv = args.output_mkv or str((PROJECT_ROOT / "output" / stem_for(args.input_video) / f"{mux_base_name}.mkv").resolve())
+        mux_subtitles(args.input_video, args.input_subs, output_mkv, env, fonts_dir=PROJECT_ROOT / "output" / "fonts")
         log(f"Wrote muxed MKV to {output_mkv}")
         return
 
