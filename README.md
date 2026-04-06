@@ -5,8 +5,8 @@ It is intended to be used alongside the public One Pace subtitle mirror at https
 
 ## Folder structure
 
-- [input/](input/): source MKVs and style reference ASS files.
-- [output/fonts/](output/fonts/): fonts attached during mux.
+- [input/](input/): source MKVs, style reference ASS files, and fonts.
+- [input/fonts/](input/fonts/): fonts attached during mux.
 - [output/subtitles/](output/subtitles/): generated ASS subtitles.
 - [output/](output/): final muxed MKVs, organized per episode folder.
 
