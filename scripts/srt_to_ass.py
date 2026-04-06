@@ -21,6 +21,8 @@ LayoutResY: 1080
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Main-207-,Impress BT Pace,82,&H00FFFFFF,&H00002EFF,&H00000000,&H78000000,0,0,0,0,100,100,0,0,1,3.8,3.8,2,180,180,27,1
 Style: Top,Impress BT Pace,82,&H00FFFFFF,&H00002EFF,&H00000000,&H78000000,0,0,0,0,100,100,0,0,1,3.8,3.8,8,180,180,27,1
+Style: Karaoke,Duality,68,&H00292CC7,&H000019FF,&H00FFFFFF,&H00000000,0,0,0,0,100,100,4,0,1,6.8,0,8,23,23,23,1
+Style: Translation,Duality,68,&H00292CC7,&H000019FF,&H00FFFFFF,&H00000000,0,0,0,0,100,100,4,0,1,6.8,0,2,23,23,34,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -143,6 +145,25 @@ def srt_to_ass_time(value: str) -> str:
     return f"{int(h)}:{m}:{s}.{centiseconds:02d}"
 
 
+def srt_timestamp_to_ms(value: str) -> int:
+    match = re.fullmatch(r"(\d{2}):(\d{2}):(\d{2}),(\d{3})", value.strip())
+    if not match:
+        raise ValueError(f"Invalid SRT timestamp: {value}")
+    hours, minutes, seconds, millis = (int(part) for part in match.groups())
+    return (((hours * 60) + minutes) * 60 + seconds) * 1000 + millis
+
+
+def ms_to_ass_time(total_ms: int) -> str:
+    if total_ms < 0:
+        total_ms = 0
+    centiseconds = (total_ms % 1000) // 10
+    total_seconds = total_ms // 1000
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours}:{minutes:02}:{seconds:02}.{centiseconds:02}"
+
+
 def escape_ass_text(text: str) -> str:
     text = text.replace("\\", r"\\")
     text = text.replace("{", r"\{")
@@ -151,9 +172,9 @@ def escape_ass_text(text: str) -> str:
     return r"\N".join(lines)
 
 
-def parse_srt(raw: str) -> list[tuple[str, str, str]]:
+def parse_srt(raw: str) -> list[tuple[int, int, str]]:
     blocks = re.split(r"\r?\n\r?\n", raw.strip())
-    cues: list[tuple[str, str, str]] = []
+    cues: list[tuple[int, int, str]] = []
 
     for block in blocks:
         lines = block.splitlines()
@@ -163,8 +184,8 @@ def parse_srt(raw: str) -> list[tuple[str, str, str]]:
             continue
 
         start_raw, end_raw = [part.strip() for part in lines[1].split("-->")]
-        start = srt_to_ass_time(start_raw)
-        end = srt_to_ass_time(end_raw)
+        start = srt_timestamp_to_ms(start_raw)
+        end = srt_timestamp_to_ms(end_raw)
         text = escape_ass_text("\n".join(lines[2:]))
         if not text:
             continue
@@ -173,12 +194,34 @@ def parse_srt(raw: str) -> list[tuple[str, str, str]]:
     return cues
 
 
-def write_ass(output_path: pathlib.Path, cues: list[tuple[str, str, str]], header: str, dialogue_style: str) -> None:
+def classify_style(start_ms: int, end_ms: int, dialogue_style: str, music_style: str = "Karaoke") -> str:
+    if end_ms <= 110_000 and start_ms < 110_000:
+        return music_style
+    return dialogue_style
+
+
+def resolve_music_style(header: str, dialogue_style: str) -> str:
+    styles_block = extract_ass_section(header, "[V4+ Styles]")
+    if not styles_block:
+        return dialogue_style
+    style_names = set(parse_style_names_from_styles_block(styles_block))
+    if "Karaoke" in style_names:
+        return "Karaoke"
+    if "Translation" in style_names:
+        return "Translation"
+    return dialogue_style
+
+
+def write_ass(output_path: pathlib.Path, cues: list[tuple[int, int, str]], header: str, dialogue_style: str) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    music_style = resolve_music_style(header, dialogue_style)
     with output_path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(header)
-        for start, end, text in cues:
-            handle.write(f"Dialogue: 0,{start},{end},{dialogue_style},,0,0,0,,{text}\n")
+        for start_ms, end_ms, text in cues:
+            style_name = classify_style(start_ms, end_ms, dialogue_style, music_style)
+            start = ms_to_ass_time(start_ms)
+            end = ms_to_ass_time(end_ms)
+            handle.write(f"Dialogue: 0,{start},{end},{style_name},,0,0,0,,{text}\n")
 
 
 def parse_args() -> argparse.Namespace:

@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
-media/
+# source videos can be huge; keep reference ASS files in input tracked
+input/*.mkv
+
+# generated outputs
+output/**/*.mkv
+output/subtitles/
+output/little-garden.source.ass
+output/fonts/
