@@ -15,7 +15,20 @@
         let
           pkgs = import nixpkgs { inherit system; };
           termsFile = pkgs.writeText "one-piece-terms.tsv" (builtins.readFile ./data/one-piece-terms.tsv);
-          ldLibraryPath = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib pkgs.ffmpeg_7 ];
+          ldLibraryPath = pkgs.lib.makeLibraryPath [
+            pkgs.stdenv.cc.cc.lib
+            pkgs.ffmpeg_7
+            pkgs.zlib
+            pkgs.zstd
+            pkgs.rocmPackages.clr
+            pkgs.rocmPackages.hipblas
+            pkgs.rocmPackages.hiprand
+            pkgs.rocmPackages.rocblas
+            pkgs.rocmPackages.hipsparse
+            pkgs.rocmPackages.hipsolver
+            pkgs.rocmPackages.miopen
+            pkgs.rocmPackages.rocm-runtime
+          ];
           runtimeInputs = [
             pkgs.coreutils
             pkgs.ffmpeg_7
@@ -31,7 +44,7 @@
             [ "${termsFile}" "${ldLibraryPath}" ]
             (builtins.readFile ./scripts/fun-pace-subs);
         in
-        rec {
+        {
           default = pkgs.symlinkJoin {
             name = "fun-pace-subs";
             paths = [ (pkgs.writeScriptBin "fun-pace-subs" scriptText) ];
@@ -56,7 +69,20 @@
         let
           pkgs = import nixpkgs { inherit system; };
           termsFile = pkgs.writeText "one-piece-terms.tsv" (builtins.readFile ./data/one-piece-terms.tsv);
-          ldLibraryPath = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib pkgs.ffmpeg_7 ];
+          ldLibraryPath = pkgs.lib.makeLibraryPath [
+            pkgs.stdenv.cc.cc.lib
+            pkgs.ffmpeg_7
+            pkgs.zlib
+            pkgs.zstd
+            pkgs.rocmPackages.clr
+            pkgs.rocmPackages.hipblas
+            pkgs.rocmPackages.hiprand
+            pkgs.rocmPackages.rocblas
+            pkgs.rocmPackages.hipsparse
+            pkgs.rocmPackages.hipsolver
+            pkgs.rocmPackages.miopen
+            pkgs.rocmPackages.rocm-runtime
+          ];
           # Create NLTK data directory with required tokenizers
           nltkData = pkgs.runCommand "nltk-data" { buildInputs = [ pkgs.python3 ]; } ''
             mkdir -p $out/tokenizers
@@ -72,9 +98,18 @@
               pkgs.gawk
               pkgs.gnused
               pkgs.mkvtoolnix
+              pkgs.zlib
               pkgs.python3
               pythonWithNltk
               pkgs.stdenv.cc.cc.lib
+              pkgs.rocmPackages.clr
+              pkgs.rocmPackages.hipblas
+              pkgs.rocmPackages.hiprand
+              pkgs.rocmPackages.rocblas
+              pkgs.rocmPackages.hipsparse
+              pkgs.rocmPackages.hipsolver
+              pkgs.rocmPackages.miopen
+              pkgs.rocmPackages.rocm-runtime
               pkgs.uv
             ] ++ [ self.packages.${system}.default ];
             shellHook = ''

@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -16,6 +18,8 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_STYLE_REFERENCE = (PROJECT_ROOT / "input" / "alabasta 18 en.ass").resolve()
 DEFAULT_TERMS_PLACEHOLDER = "@DEFAULT_TERMS_FILE@"
 DEFAULT_LD_LIBRARY_PATH_PLACEHOLDER = "@DEFAULT_LD_LIBRARY_PATH@"
+CTRANSLATE2_ROCM_RELEASE_URL = "https://github.com/OpenNMT/CTranslate2/releases/download/v4.7.1/rocm-python-wheels-Linux.zip"
+CTRANSLATE2_ROCM_CACHE_DIR = Path.home() / ".cache" / "fun-pace-subs" / "ctranslate2-rocm"
 
 
 def die(message: str) -> None:
@@ -71,6 +75,118 @@ def rocm_available() -> bool:
 
 def nvidia_available() -> bool:
     return command_exists("nvidia-smi")
+
+
+def python_wheel_tag() -> str:
+    return f"cp{sys.version_info.major}{sys.version_info.minor}"
+
+
+def rocm_ctranslate2_wheel_path() -> Path:
+    wheel_cache_dir = CTRANSLATE2_ROCM_CACHE_DIR / python_wheel_tag()
+    wheel_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    wheel_candidates = sorted(wheel_cache_dir.glob("ctranslate2-*.whl"))
+    if wheel_candidates:
+        return wheel_candidates[0]
+
+    archive_path = wheel_cache_dir / "rocm-python-wheels-Linux.zip"
+    if not archive_path.is_file():
+        log(f"Downloading ROCm CTranslate2 wheel bundle from {CTRANSLATE2_ROCM_RELEASE_URL}")
+        urllib.request.urlretrieve(CTRANSLATE2_ROCM_RELEASE_URL, archive_path)
+
+    with zipfile.ZipFile(archive_path) as archive:
+        for member in archive.namelist():
+            if member.endswith(".whl") and python_wheel_tag() in Path(member).name:
+                extracted_name = Path(member).name
+                extracted_path = wheel_cache_dir / extracted_name
+                if not extracted_path.is_file():
+                    with archive.open(member) as source, open(extracted_path, "wb") as destination:
+                        shutil.copyfileobj(source, destination)
+                return extracted_path
+
+    die(f"Unable to find a ROCm CTranslate2 wheel for {python_wheel_tag()} in {archive_path}")
+
+
+def whisperx_batch_candidates(device: str, requested_batch: str, resolved_batch: str) -> list[str]:
+    if device != "cuda" or requested_batch != "auto":
+        return [resolved_batch]
+
+    ordered = ["32", "24", "16", "12", "8", "6", "4", "2", "1"]
+    if resolved_batch in ordered:
+        ordered.remove(resolved_batch)
+    return [resolved_batch] + ordered
+
+
+def transcribe_audio_faster_whisper(
+    input_audio: str,
+    output_dir: str,
+    model: str,
+    language: str,
+    compute_type: str,
+    device: str,
+    batch_size: str,
+    env: dict[str, str],
+) -> str:
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    output_srt = str(Path(output_dir) / f"{stem_for(input_audio)}.srt")
+    wheel_path = rocm_ctranslate2_wheel_path()
+
+    python_code = (
+        "import sys\n"
+        "\n"
+        "from faster_whisper import WhisperModel\n"
+        "\n"
+        "def format_timestamp(seconds: float) -> str:\n"
+        "    total_milliseconds = int(round(seconds * 1000))\n"
+        "    hours, remainder = divmod(total_milliseconds, 3600000)\n"
+        "    minutes, remainder = divmod(remainder, 60000)\n"
+        "    seconds, milliseconds = divmod(remainder, 1000)\n"
+        "    return f\"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}\"\n"
+        "\n"
+        "input_audio, output_srt, model_name, language, compute_type, device = sys.argv[1:7]\n"
+        "if language == 'auto':\n"
+        "    language = None\n"
+        "\n"
+        "model = WhisperModel(model_name, device=device, compute_type=compute_type)\n"
+        "segments, info = model.transcribe(\n"
+        "    input_audio,\n"
+        "    language=language,\n"
+        ")\n"
+        "\n"
+        "with open(output_srt, 'w', encoding='utf-8') as handle:\n"
+        "    for index, segment in enumerate(segments, start=1):\n"
+        "        text = segment.text.strip()\n"
+        "        if not text:\n"
+        "            continue\n"
+        "        handle.write(f'{index}\\n')\n"
+        "        handle.write(\n"
+        "            f'{format_timestamp(segment.start)} --> {format_timestamp(segment.end)}\\n'\n"
+        "        )\n"
+        "        handle.write(f'{text}\\n\\n')\n"
+    )
+
+    args = [
+        "uvx",
+        "--with",
+        str(wheel_path),
+        "--from",
+        "faster-whisper",
+        "python",
+        "-c",
+        python_code,
+        input_audio,
+        output_srt,
+        model,
+        language,
+        compute_type,
+        device,
+    ]
+    log(
+        "Using uvx fallback for faster-whisper with ROCm CTranslate2 wheel: "
+        f"{wheel_path.name}"
+    )
+    run_command(args, env=env)
+    return output_srt
 
 
 def resolve_whisper_runtime(device: str, compute_type: str, batch_size: str) -> tuple[str, str, str]:
@@ -220,8 +336,10 @@ def transcribe_audio(
     device: str,
     batch_size: str,
     env: dict[str, str],
+    force_device: str = "auto",
 ) -> str:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    whisper_env = dict(env)
 
     rocm_detected = rocm_available()
     nvidia_detected = nvidia_available()
@@ -232,27 +350,40 @@ def transcribe_audio(
     )
 
     resolved_device, resolved_compute, resolved_batch = resolve_whisper_runtime(device, compute_type, batch_size)
-
-    if command_exists("whisperx"):
-        whisperx_cmd = ["whisperx"]
-    elif command_exists("uvx"):
-        torch_backend = os.environ.get("FUN_PACE_UV_TORCH_BACKEND")
-        if not torch_backend:
-            torch_backend = "rocm6.4" if rocm_available() else "cpu"
-        if torch_backend == "cpu" and resolved_device == "cuda":
-            resolved_device = "cpu"
-            if compute_type == "auto":
-                resolved_compute = "int8"
-            if batch_size == "auto":
-                resolved_batch = "4"
-        elif torch_backend.startswith("rocm") and resolved_device == "cpu" and device == "auto":
+    if rocm_detected and command_exists("uvx") and force_device != "cpu":
+        if resolved_device == "cpu" and device == "auto":
             resolved_device = "cuda"
             if compute_type == "auto":
                 resolved_compute = "float16"
             if batch_size == "auto":
                 resolved_batch = "16"
-        whisperx_cmd = ["uvx", "--torch-backend", torch_backend, "--from", "whisperx", "whisperx"]
-        log(f"Using uvx fallback for WhisperX with torch backend: {torch_backend} (first run may take longer).")
+
+        log(
+            f"Transcription runtime: device={resolved_device} compute_type={resolved_compute} "
+            f"batch_size={resolved_batch}"
+        )
+        log(f"Transcribing {Path(input_audio).name} with faster-whisper model {model}")
+        return transcribe_audio_faster_whisper(
+            input_audio,
+            output_dir,
+            model,
+            language,
+            resolved_compute,
+            resolved_device,
+            resolved_batch,
+            whisper_env,
+        )
+
+    if command_exists("whisperx"):
+        whisperx_cmd = ["whisperx"]
+    elif command_exists("uvx"):
+        if resolved_device == "cpu" and device == "auto":
+            resolved_device = "cpu"
+            if compute_type == "auto":
+                resolved_compute = "int8"
+            if batch_size == "auto":
+                resolved_batch = "4"
+        whisperx_cmd = ["uvx", "--from", "whisperx", "whisperx"]
     else:
         die("Missing required command: whisperx (or uvx fallback)")
 
@@ -262,27 +393,98 @@ def transcribe_audio(
     )
     log(f"Transcribing {Path(input_audio).name} with WhisperX model {model}")
 
-    run_command(
-        whisperx_cmd
-        + [
-            input_audio,
-            "--model",
-            model,
-            "--language",
-            language,
-            "--output_dir",
-            output_dir,
-            "--output_format",
-            "srt",
-            "--compute_type",
-            resolved_compute,
-            "--device",
-            resolved_device,
-            "--batch_size",
-            resolved_batch,
-        ],
-        env=env,
-    )
+    whisper_extra_args: list[str] = []
+    if rocm_detected:
+        whisper_extra_args.extend(["--vad_method", "silero"])
+
+    batch_candidates = whisperx_batch_candidates(resolved_device, batch_size, resolved_batch)
+    if len(batch_candidates) > 1:
+        log(f"Auto batch tuning enabled. Candidates: {', '.join(batch_candidates)}")
+
+    last_error: subprocess.CalledProcessError | None = None
+    successful_batch: str | None = None
+
+    for candidate_batch in batch_candidates:
+        try:
+            log(f"WhisperX attempt with batch_size={candidate_batch}")
+            run_command(
+                whisperx_cmd
+                + [
+                    input_audio,
+                    "--model",
+                    model,
+                    "--language",
+                    language,
+                    "--output_dir",
+                    output_dir,
+                    "--output_format",
+                    "srt",
+                    "--compute_type",
+                    resolved_compute,
+                    "--device",
+                    resolved_device,
+                    "--batch_size",
+                    candidate_batch,
+                ]
+                + whisper_extra_args,
+                env=whisper_env,
+            )
+            successful_batch = candidate_batch
+            break
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if candidate_batch == batch_candidates[-1]:
+                break
+            log(f"WhisperX failed with batch_size={candidate_batch}; retrying with a smaller batch.")
+
+    if successful_batch is None:
+        if rocm_detected and resolved_device == "cuda" and force_device != "cuda":
+            log("ROCm GPU transcription failed; switching to ROCm-accelerated CPU mode.")
+            resolved_device = "cpu"
+            resolved_compute = "int8"
+            cpu_batch_candidates = whisperx_batch_candidates("cpu", "auto", "4")
+            last_error = None
+
+            for candidate_batch in cpu_batch_candidates:
+                try:
+                    log(f"WhisperX ROCm-accelerated CPU attempt with batch_size={candidate_batch}")
+                    run_command(
+                        whisperx_cmd
+                        + [
+                            input_audio,
+                            "--model",
+                            model,
+                            "--language",
+                            language,
+                            "--output_dir",
+                            output_dir,
+                            "--output_format",
+                            "srt",
+                            "--compute_type",
+                            resolved_compute,
+                            "--device",
+                            resolved_device,
+                            "--batch_size",
+                            candidate_batch,
+                        ]
+                        + whisper_extra_args,
+                        env=whisper_env,
+                    )
+                    successful_batch = candidate_batch
+                    break
+                except subprocess.CalledProcessError as exc:
+                    last_error = exc
+                    if candidate_batch == cpu_batch_candidates[-1]:
+                        break
+                    log(f"CPU fallback failed with batch_size={candidate_batch}; retrying with a smaller batch.")
+
+        if successful_batch is None:
+            if last_error is not None:
+                raise last_error
+            die("WhisperX failed before a transcription batch could be selected")
+
+    if successful_batch != resolved_batch:
+        log(f"Auto batch tuning selected stable batch_size={successful_batch}")
 
     return str(Path(output_dir) / f"{stem_for(input_audio)}.srt")
 
@@ -473,6 +675,7 @@ def parse_args() -> argparse.Namespace:
     transcribe_cmd.add_argument("--device", default="auto")
     transcribe_cmd.add_argument("--batch-size", default="auto")
     transcribe_cmd.add_argument("--language", default="en")
+    transcribe_cmd.add_argument("--force-device", choices=["auto", "cuda", "cpu"], default="auto", help="Skip CPU fallback and fail if device unavailable")
 
     normalize_cmd = sub.add_parser("normalize")
     normalize_cmd.add_argument("input_srt")
@@ -588,6 +791,7 @@ def main() -> None:
             args.device,
             args.batch_size,
             env,
+            force_device=args.force_device,
         )
         log(f"Wrote transcribed subtitles to {raw_srt}")
         return
