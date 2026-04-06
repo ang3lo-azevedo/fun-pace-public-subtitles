@@ -504,7 +504,7 @@ def main() -> None:
         mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", input_path.stem)
         mux_output_dir = (PROJECT_ROOT / "output" / base_name).resolve()
         muxed_output = str((mux_output_dir / f"{mux_base_name}.mkv").resolve())
-        fonts_dir = PROJECT_ROOT / "output" / "fonts"
+        fonts_dir = PROJECT_ROOT / "input" / "fonts"
 
         with tempfile.TemporaryDirectory() as tmp:
             extracted_audio = str(Path(tmp) / f"{base_name}.wav")
@@ -598,7 +598,7 @@ def main() -> None:
     if args.command == "mux":
         mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", stem_for(args.input_video))
         output_mkv = args.output_mkv or str((PROJECT_ROOT / "output" / stem_for(args.input_video) / f"{mux_base_name}.mkv").resolve())
-        mux_subtitles(args.input_video, args.input_subs, output_mkv, env, fonts_dir=PROJECT_ROOT / "output" / "fonts")
+        mux_subtitles(args.input_video, args.input_subs, output_mkv, env, fonts_dir=PROJECT_ROOT / "input" / "fonts")
         log(f"Wrote muxed MKV to {output_mkv}")
         return
 

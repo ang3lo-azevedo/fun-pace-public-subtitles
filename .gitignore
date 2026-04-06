@@ -6,4 +6,3 @@ input/*.mkv
 # generated outputs
 output/**/*.mkv
 output/subtitles/
-output/fonts/
