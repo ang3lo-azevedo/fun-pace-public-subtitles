@@ -253,6 +253,25 @@ def stylize_cues(cues: list[Cue], replacements: list[tuple[str, str]]) -> list[C
     return output
 
 
+# Whisper occasionally hallucinates the same line back-to-back (e.g. over music or
+# silence). Merge those runs into a single cue instead of flashing duplicates.
+DUPLICATE_MERGE_MAX_GAP_MS = 3000
+
+
+def merge_consecutive_duplicates(cues: list[Cue]) -> list[Cue]:
+    merged: list[Cue] = []
+    for cue in cues:
+        if merged and merged[-1].text and cue.text.strip().lower() == merged[-1].text.strip().lower():
+            prev = merged[-1]
+            prev_start, prev_end = split_timecode(prev.timecode)
+            next_start, next_end = split_timecode(cue.timecode)
+            if next_start - prev_end <= DUPLICATE_MERGE_MAX_GAP_MS:
+                merged[-1] = Cue(index=prev.index, timecode=join_timecode(prev_start, next_end), text=prev.text)
+                continue
+        merged.append(cue)
+    return merged
+
+
 def write_srt(path: pathlib.Path, cues: list[Cue]) -> None:
     blocks = []
     for i, cue in enumerate(cues, start=1):
@@ -275,6 +294,7 @@ def main() -> None:
     cues = parse_srt(raw)
 
     styled_cues = stylize_cues(cues, replacements)
+    styled_cues = merge_consecutive_duplicates(styled_cues)
     write_srt(args.output, styled_cues)
 
 

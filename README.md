@@ -5,45 +5,46 @@ It is intended to be used alongside the public One Pace subtitle mirror at https
 
 ## Folder structure
 
-- [input/](input/): source MKVs, style reference ASS files, and fonts.
+- [input/episodes/](input/episodes/): source MKVs. `run` also symlinks the generated ASS here next to its video so media players auto-load it.
+- [input/styles/](input/styles/): style reference ASS files.
 - [input/fonts/](input/fonts/): fonts attached during mux.
-- [output/subtitles/](output/subtitles/): generated ASS subtitles.
-- [output/](output/): final muxed MKVs.
+- [output/episodes/](output/episodes/): one folder per episode holding both the generated ASS and the muxed MKV.
 
-Example output paths:
-- [output/subtitles/[Episode Name with [AI Subs]].ass](output/subtitles/)
-- [output/[Episode Name with [AI Subs]].mkv](output/)
+Example output path:
+- [output/episodes/[Episode Name with [AI Subs]]/[Episode Name with [AI Subs]].ass and .mkv](output/episodes/)
 
 ## What it does
 
 1. Extracts the English dub audio track from an MKV.
-2. Sends that audio through WhisperX to generate an SRT.
-3. Normalizes One Piece terminology such as `Zolo -> Zoro` and `Lufi -> Luffy`.
-4. Styles and wraps subtitles to 1-2 lines per cue.
-5. Converts SRT to ASS using a reference style set.
-6. Muxes subtitles + fonts into a new MKV (enabled by default for `run`).
+2. Transcribes that audio (WhisperX, or `faster-whisper` on the ROCm GPU path) to generate an SRT.
+3. On the ROCm path, refines segment timestamps with a CPU-only WhisperX forced-alignment pass.
+4. Normalizes One Piece terminology such as `Zolo -> Zoro` and `Lufi -> Luffy`.
+5. Styles and wraps subtitles to 1-2 lines per cue, merging any back-to-back duplicate cues from transcription hallucinations.
+6. Converts SRT to ASS using a reference style set.
+7. Muxes subtitles + fonts into a new MKV (enabled by default for `run`).
 
 ## Usage
 
 Cross-platform CLI entrypoint:
 
 ```text
-python3 scripts/fun-pace-subs run <input.mkv>
+python3 scripts/fun-pace-subs.py run <input.mkv>
 ```
 
 If you want reproducible tool dependencies via Nix on Linux/macOS:
 
 ```text
-nix develop path:$PWD --no-write-lock-file -c scripts/fun-pace-subs run "input/[FunPace] Straw Hats Daily 01 - Chopper's Concoctions [Dual Audio][Subs Missing][1080p].mkv" --model large-v3
+nix develop path:$PWD --no-write-lock-file -c scripts/fun-pace-subs.py run "input/episodes/[FunPace] Straw Hats Daily 01 - Chopper's Concoctions [Dual Audio][Subs Missing][1080p].mkv" --model large-v3
 ```
 
 If you only want ASS output (skip mux):
 
 ```text
-nix develop path:$PWD --no-write-lock-file -c scripts/fun-pace-subs run "input/[FunPace] Straw Hats Daily 01 - Chopper's Concoctions [Dual Audio][Subs Missing][1080p].mkv" --no-mux
+nix develop path:$PWD --no-write-lock-file -c scripts/fun-pace-subs.py run "input/episodes/[FunPace] Straw Hats Daily 01 - Chopper's Concoctions [Dual Audio][Subs Missing][1080p].mkv" --no-mux
 ```
 
-For AMD GPUs (ROCm), the script now uses `faster-whisper` directly with the ROCm CTranslate2 wheel so transcription can run on the GPU without WhisperX's Torch alignment stack.
+For AMD GPUs (ROCm), the script uses `faster-whisper` directly with the ROCm CTranslate2 wheel so transcription can run on the GPU without WhisperX's Torch decode stack. If GPU transcription fails (e.g. out of VRAM), it automatically retries on CPU.
+Raw `faster-whisper` segment timestamps are approximate (Whisper's own timestamp tokens), so the script follows up with a CPU-only WhisperX forced-alignment pass to snap each cue's start/end to the audio. This only needs CPU-only PyTorch, so it doesn't require a working ROCm/Torch build. If that alignment pass is unavailable or fails, the pipeline falls back to the unaligned timestamps rather than failing the run.
 You can still override the runtime with `--device`, `--compute-type`, and `--batch-size` for non-ROCm paths.
 
 ## Dependencies
@@ -82,12 +83,12 @@ You can still override the runtime with `--device`, `--compute-type`, and `--bat
 ## Style reference behavior
 
 Default style reference for `run`:
-- [input/alabasta 18 en.ass](input/alabasta%2018%20en.ass)
+- [input/styles/alabasta 18 en.ass](input/styles/alabasta%2018%20en.ass)
 
 Override per run:
 
 ```text
-scripts/fun-pace-subs run "input/episode.mkv" --style-reference-ass "input/another-style.ass"
+scripts/fun-pace-subs.py run "input/episodes/episode.mkv" --style-reference-ass "input/styles/another-style.ass"
 ```
 
 Fallback behavior if no explicit/default style reference is available:
@@ -100,24 +101,24 @@ Music styling behavior:
 If you want to step through the pipeline manually:
 
 ```text
-python3 scripts/fun-pace-subs extract "input.mkv"
-python3 scripts/fun-pace-subs transcribe "input.wav"
-python3 scripts/fun-pace-subs normalize "input.srt"
-python3 scripts/fun-pace-subs style "input.srt"
-python3 scripts/fun-pace-subs assify "input.srt"
-python3 scripts/fun-pace-subs mux "input.mkv" "output/subtitles/<episode with [AI Subs]>.ass"
+python3 scripts/fun-pace-subs.py extract "input.mkv"
+python3 scripts/fun-pace-subs.py transcribe "input.wav"
+python3 scripts/fun-pace-subs.py normalize "input.srt"
+python3 scripts/fun-pace-subs.py style "input.srt"
+python3 scripts/fun-pace-subs.py assify "input.srt"
+python3 scripts/fun-pace-subs.py mux "input.mkv" "output/episodes/<episode with [AI Subs]>/<episode with [AI Subs]>.ass"
 ```
 
 Extract source ASS from an MKV for style comparison (optional):
 
 ```text
-python3 scripts/fun-pace-subs extract-ass "input/[One Pace][127-129] Little Garden 05 [1080p][51105EBB].mkv" "output/little-garden.source.ass"
+python3 scripts/fun-pace-subs.py extract-ass "input/episodes/[One Pace][127-129] Little Garden 05 [1080p][51105EBB].mkv" "output/little-garden.source.ass"
 ```
 
 Generate a matched-style ASS from SRT using a chosen style block:
 
 ```text
-python3 scripts/fun-pace-subs assify "output/episode.styled.srt" "output/subtitles/episode [AI Subs].ass" --style-from-ass "input/alabasta 18 en.ass"
+python3 scripts/fun-pace-subs.py assify "output/episode.styled.srt" "output/episodes/episode [AI Subs]/episode [AI Subs].ass" --style-from-ass "input/styles/alabasta 18 en.ass"
 ```
 
 ## Output naming

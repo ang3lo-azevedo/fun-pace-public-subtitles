@@ -1,8 +1,12 @@
 __pycache__/
 *.pyc
-# source videos can be huge; keep reference ASS files in input tracked
-input/*.mkv
+# source videos can be huge; keep reference ASS files in input/styles tracked
+input/episodes/*.mkv
 
 # generated outputs
-output/**/*.mkv
-output/subtitles/
+output/episodes/
+
+# `run` symlinks the generated ASS next to the source video; this tracks
+# generated output, not reference style files (which live in input/styles/).
+input/episodes/*\[Subs Missing\]*.ass
+input/episodes/*\[AI Subs\]*.ass

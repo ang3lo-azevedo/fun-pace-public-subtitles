@@ -42,7 +42,7 @@
           scriptText = pkgs.lib.replaceStrings
             [ "@DEFAULT_TERMS_FILE@" "@DEFAULT_LD_LIBRARY_PATH@" ]
             [ "${termsFile}" "${ldLibraryPath}" ]
-            (builtins.readFile ./scripts/fun-pace-subs);
+            (builtins.readFile ./scripts/fun-pace-subs.py);
         in
         {
           default = pkgs.symlinkJoin {

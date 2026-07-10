@@ -15,10 +15,11 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
-DEFAULT_STYLE_REFERENCE = (PROJECT_ROOT / "input" / "alabasta 18 en.ass").resolve()
+DEFAULT_STYLE_REFERENCE = (PROJECT_ROOT / "input" / "styles" / "alabasta 18 en.ass").resolve()
 DEFAULT_TERMS_PLACEHOLDER = "@DEFAULT_TERMS_FILE@"
 DEFAULT_LD_LIBRARY_PATH_PLACEHOLDER = "@DEFAULT_LD_LIBRARY_PATH@"
-CTRANSLATE2_ROCM_RELEASE_URL = "https://github.com/OpenNMT/CTranslate2/releases/download/v4.7.1/rocm-python-wheels-Linux.zip"
+CTRANSLATE2_ROCM_RELEASE_VERSION = "v4.8.1"
+CTRANSLATE2_ROCM_RELEASE_URL = f"https://github.com/OpenNMT/CTranslate2/releases/download/{CTRANSLATE2_ROCM_RELEASE_VERSION}/rocm-python-wheels-Linux.zip"
 CTRANSLATE2_ROCM_CACHE_DIR = Path.home() / ".cache" / "fun-pace-subs" / "ctranslate2-rocm"
 
 
@@ -69,7 +70,7 @@ def stem_for(path: str) -> str:
 
 
 def rocm_available() -> bool:
-    # ROCm commonly exposes /dev/kfd; rocminfo is a secondary signal.
+    # ROCm commonly exposes /dev/kfd. rocminfo is a secondary signal.
     return Path("/dev/kfd").exists() or command_exists("rocminfo")
 
 
@@ -82,7 +83,7 @@ def python_wheel_tag() -> str:
 
 
 def rocm_ctranslate2_wheel_path() -> Path:
-    wheel_cache_dir = CTRANSLATE2_ROCM_CACHE_DIR / python_wheel_tag()
+    wheel_cache_dir = CTRANSLATE2_ROCM_CACHE_DIR / CTRANSLATE2_ROCM_RELEASE_VERSION / python_wheel_tag()
     wheel_cache_dir.mkdir(parents=True, exist_ok=True)
 
     wheel_candidates = sorted(wheel_cache_dir.glob("ctranslate2-*.whl"))
@@ -126,12 +127,20 @@ def transcribe_audio_faster_whisper(
     device: str,
     batch_size: str,
     env: dict[str, str],
-) -> str:
+) -> tuple[str, str]:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     output_srt = str(Path(output_dir) / f"{stem_for(input_audio)}.srt")
+    output_json = str(Path(output_dir) / f"{stem_for(input_audio)}.segments.json")
     wheel_path = rocm_ctranslate2_wheel_path()
 
+    # Works around a ROCm LLVM codegen bug on RDNA4 (gfx1200/gfx1201) that otherwise
+    # crashes CTranslate2 with "Memory access fault... Page not present" on GPU.
+    # See https://github.com/OpenNMT/CTranslate2/issues/2021.
+    env = dict(env)
+    env.setdefault("CT2_CUDA_ALLOCATOR", "cub_caching")
+
     python_code = (
+        "import json\n"
         "import sys\n"
         "\n"
         "from faster_whisper import WhisperModel\n"
@@ -143,7 +152,7 @@ def transcribe_audio_faster_whisper(
         "    seconds, milliseconds = divmod(remainder, 1000)\n"
         "    return f\"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}\"\n"
         "\n"
-        "input_audio, output_srt, model_name, language, compute_type, device = sys.argv[1:7]\n"
+        "input_audio, output_srt, output_json, model_name, language, compute_type, device = sys.argv[1:8]\n"
         "if language == 'auto':\n"
         "    language = None\n"
         "\n"
@@ -151,18 +160,27 @@ def transcribe_audio_faster_whisper(
         "segments, info = model.transcribe(\n"
         "    input_audio,\n"
         "    language=language,\n"
+        "    vad_filter=True,\n"
+        "    condition_on_previous_text=False,\n"
         ")\n"
         "\n"
+        "raw_segments = []\n"
         "with open(output_srt, 'w', encoding='utf-8') as handle:\n"
-        "    for index, segment in enumerate(segments, start=1):\n"
+        "    index = 0\n"
+        "    for segment in segments:\n"
         "        text = segment.text.strip()\n"
         "        if not text:\n"
         "            continue\n"
+        "        index += 1\n"
         "        handle.write(f'{index}\\n')\n"
         "        handle.write(\n"
         "            f'{format_timestamp(segment.start)} --> {format_timestamp(segment.end)}\\n'\n"
         "        )\n"
         "        handle.write(f'{text}\\n\\n')\n"
+        "        raw_segments.append({'start': segment.start, 'end': segment.end, 'text': text})\n"
+        "\n"
+        "with open(output_json, 'w', encoding='utf-8') as handle:\n"
+        "    json.dump({'language': info.language, 'segments': raw_segments}, handle)\n"
     )
 
     args = [
@@ -176,17 +194,100 @@ def transcribe_audio_faster_whisper(
         python_code,
         input_audio,
         output_srt,
+        output_json,
         model,
         language,
         compute_type,
         device,
     ]
+    attempts = [(device, compute_type)]
+    if device == "cuda":
+        attempts.append(("cpu", "int8"))
+
     log(
         "Using uvx fallback for faster-whisper with ROCm CTranslate2 wheel: "
         f"{wheel_path.name}"
     )
-    run_command(args, env=env)
-    return output_srt
+
+    last_error: subprocess.CalledProcessError | None = None
+    for attempt_device, attempt_compute in attempts:
+        attempt_args = list(args)
+        attempt_args[-2] = attempt_compute
+        attempt_args[-1] = attempt_device
+
+        try:
+            if attempt_device != device:
+                log("ROCm GPU transcription failed, retrying faster-whisper on CPU.")
+            run_command(attempt_args, env=env)
+            return output_srt, output_json
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    return output_srt, output_json
+
+
+def align_segments_whisperx(input_audio: str, segments_json: str, output_srt: str, env: dict[str, str]) -> bool:
+    python_code = (
+        "import json\n"
+        "import sys\n"
+        "\n"
+        "import whisperx\n"
+        "\n"
+        "def format_timestamp(seconds: float) -> str:\n"
+        "    total_milliseconds = int(round(seconds * 1000))\n"
+        "    hours, remainder = divmod(total_milliseconds, 3600000)\n"
+        "    minutes, remainder = divmod(remainder, 60000)\n"
+        "    seconds, milliseconds = divmod(remainder, 1000)\n"
+        "    return f\"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}\"\n"
+        "\n"
+        "input_audio, segments_json_path, output_srt = sys.argv[1:4]\n"
+        "with open(segments_json_path, encoding='utf-8') as fh:\n"
+        "    payload = json.load(fh)\n"
+        "\n"
+        "language = payload.get('language') or 'en'\n"
+        "segments = payload.get('segments') or []\n"
+        "if not segments:\n"
+        "    raise SystemExit('No segments to align')\n"
+        "\n"
+        "device = 'cpu'\n"
+        "audio = whisperx.load_audio(input_audio)\n"
+        "model_a, metadata = whisperx.load_align_model(language_code=language, device=device)\n"
+        "result = whisperx.align(segments, model_a, metadata, audio, device, return_char_alignments=False)\n"
+        "\n"
+        "with open(output_srt, 'w', encoding='utf-8') as handle:\n"
+        "    index = 0\n"
+        "    for segment in result['segments']:\n"
+        "        text = (segment.get('text') or '').strip()\n"
+        "        if not text:\n"
+        "            continue\n"
+        "        index += 1\n"
+        "        handle.write(f'{index}\\n')\n"
+        "        handle.write(\n"
+        "            f\"{format_timestamp(segment['start'])} --> {format_timestamp(segment['end'])}\\n\"\n"
+        "        )\n"
+        "        handle.write(f'{text}\\n\\n')\n"
+    )
+
+    args = [
+        "uvx",
+        "--from",
+        "whisperx",
+        "python",
+        "-c",
+        python_code,
+        input_audio,
+        segments_json,
+        output_srt,
+    ]
+
+    try:
+        run_command(args, env=env)
+    except subprocess.CalledProcessError as exc:
+        log(f"WhisperX CPU alignment failed, keeping unaligned timestamps: {exc}")
+        return False
+    return Path(output_srt).is_file()
 
 
 def resolve_whisper_runtime(device: str, compute_type: str, batch_size: str) -> tuple[str, str, str]:
@@ -288,7 +389,7 @@ def extract_audio(input_video: str, output_audio: str, track_index: int | None, 
 def normalize_srt(input_srt: str, output_srt: str, terms_file: str | None, env: dict[str, str]) -> None:
     args = [
         sys.executable,
-        str(SCRIPT_DIR / "normalize_srt.py"),
+        str(SCRIPT_DIR / "lib" / "normalize_srt.py"),
         "--input",
         input_srt,
         "--output",
@@ -302,7 +403,7 @@ def normalize_srt(input_srt: str, output_srt: str, terms_file: str | None, env: 
 def style_srt(input_srt: str, output_srt: str, terms_file: str | None, env: dict[str, str]) -> None:
     args = [
         sys.executable,
-        str(SCRIPT_DIR / "style_srt.py"),
+        str(SCRIPT_DIR / "lib" / "style_srt.py"),
         "--input",
         input_srt,
         "--output",
@@ -316,7 +417,7 @@ def style_srt(input_srt: str, output_srt: str, terms_file: str | None, env: dict
 def convert_srt_to_ass(input_srt: str, output_ass: str, env: dict[str, str], style_from_ass: str | None = None) -> None:
     args = [
         sys.executable,
-        str(SCRIPT_DIR / "srt_to_ass.py"),
+        str(SCRIPT_DIR / "lib" / "srt_to_ass.py"),
         "--input",
         input_srt,
         "--output",
@@ -351,19 +452,12 @@ def transcribe_audio(
 
     resolved_device, resolved_compute, resolved_batch = resolve_whisper_runtime(device, compute_type, batch_size)
     if rocm_detected and command_exists("uvx") and force_device != "cpu":
-        if resolved_device == "cpu" and device == "auto":
-            resolved_device = "cuda"
-            if compute_type == "auto":
-                resolved_compute = "float16"
-            if batch_size == "auto":
-                resolved_batch = "16"
-
         log(
             f"Transcription runtime: device={resolved_device} compute_type={resolved_compute} "
             f"batch_size={resolved_batch}"
         )
         log(f"Transcribing {Path(input_audio).name} with faster-whisper model {model}")
-        return transcribe_audio_faster_whisper(
+        raw_srt, segments_json = transcribe_audio_faster_whisper(
             input_audio,
             output_dir,
             model,
@@ -373,6 +467,16 @@ def transcribe_audio(
             resolved_batch,
             whisper_env,
         )
+
+        if command_exists("uvx"):
+            aligned_srt = str(Path(output_dir) / f"{stem_for(input_audio)}.aligned.srt")
+            log("Refining segment timestamps with WhisperX forced alignment (CPU)")
+            if align_segments_whisperx(input_audio, segments_json, aligned_srt, whisper_env):
+                log(f"Alignment refinement applied: {Path(aligned_srt).name}")
+                return aligned_srt
+            log("Alignment refinement unavailable, using unaligned faster-whisper timestamps.")
+
+        return raw_srt
 
     if command_exists("whisperx"):
         whisperx_cmd = ["whisperx"]
@@ -435,11 +539,11 @@ def transcribe_audio(
             last_error = exc
             if candidate_batch == batch_candidates[-1]:
                 break
-            log(f"WhisperX failed with batch_size={candidate_batch}; retrying with a smaller batch.")
+            log(f"WhisperX failed with batch_size={candidate_batch}, retrying with a smaller batch.")
 
     if successful_batch is None:
         if rocm_detected and resolved_device == "cuda" and force_device != "cuda":
-            log("ROCm GPU transcription failed; switching to ROCm-accelerated CPU mode.")
+            log("ROCm GPU transcription failed, switching to ROCm-accelerated CPU mode.")
             resolved_device = "cpu"
             resolved_compute = "int8"
             cpu_batch_candidates = whisperx_batch_candidates("cpu", "auto", "4")
@@ -476,7 +580,7 @@ def transcribe_audio(
                     last_error = exc
                     if candidate_batch == cpu_batch_candidates[-1]:
                         break
-                    log(f"CPU fallback failed with batch_size={candidate_batch}; retrying with a smaller batch.")
+                    log(f"CPU fallback failed with batch_size={candidate_batch}, retrying with a smaller batch.")
 
         if successful_batch is None:
             if last_error is not None:
@@ -613,7 +717,7 @@ def mux_subtitles(input_video: str, input_subs: str, output_mkv: str, env: dict[
             attached_count = len(attachment_args) // 2
             log(f"Attaching {attached_count} font files from {fonts_dir}")
 
-            Path(output_mkv).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_mkv).parent.mkdir(parents=True, exist_ok=True)
     log(f"Muxing subtitles into {Path(output_mkv).name}")
     run_command(
         [
@@ -718,16 +822,16 @@ def main() -> None:
         input_path = Path(input_video)
         mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", input_path.stem)
 
-        # Keep generated ASS files in a single subtitles root without per-episode folders.
-        subtitle_root = Path(args.output_dir).resolve() if args.output_dir else (PROJECT_ROOT / "output" / "subtitles").resolve()
-        subtitle_root.mkdir(parents=True, exist_ok=True)
+        # Each episode gets its own folder holding both the generated ASS and the muxed MKV.
+        episode_root = Path(args.output_dir).resolve() if args.output_dir else (PROJECT_ROOT / "output" / "episodes" / mux_base_name).resolve()
+        episode_root.mkdir(parents=True, exist_ok=True)
 
         base_name = stem_for(input_video)
-        ass_output_path = subtitle_root / f"{mux_base_name}.ass"
+        ass_output_path = episode_root / f"{mux_base_name}.ass"
         ass_output = str(ass_output_path)
 
         media_symlink_path = input_path.with_suffix(".ass")
-        muxed_output = str((PROJECT_ROOT / "output" / f"{mux_base_name}.mkv").resolve())
+        muxed_output = str((episode_root / f"{mux_base_name}.mkv").resolve())
         fonts_dir = PROJECT_ROOT / "input" / "fonts"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -761,7 +865,7 @@ def main() -> None:
             convert_srt_to_ass(normalized_srt, ass_output, env, style_reference_ass)
 
             if args.keep_audio:
-                shutil.copy2(extracted_audio, subtitle_root / f"{mux_base_name}.wav")
+                shutil.copy2(extracted_audio, episode_root / f"{mux_base_name}.wav")
 
         log(f"Wrote ASS subtitles to {ass_output}")
 
@@ -822,7 +926,7 @@ def main() -> None:
 
     if args.command == "mux":
         mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", stem_for(args.input_video))
-        output_mkv = args.output_mkv or str((PROJECT_ROOT / "output" / f"{mux_base_name}.mkv").resolve())
+        output_mkv = args.output_mkv or str((PROJECT_ROOT / "output" / "episodes" / mux_base_name / f"{mux_base_name}.mkv").resolve())
         mux_subtitles(args.input_video, args.input_subs, output_mkv, env, fonts_dir=PROJECT_ROOT / "input" / "fonts")
         log(f"Wrote muxed MKV to {output_mkv}")
         return
