@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Standalone CLI (also invoked as a subprocess from fun-pace-subs.py) that
+rewrites known One Piece terminology mishearings/inconsistencies in an SRT.
+See data/one-piece-terms.tsv for the full, project-wide replacement list.
+DEFAULT_REPLACEMENTS below is only a minimal built-in fallback for when no
+terms file is available at all.
+"""
 from __future__ import annotations
 
 import argparse
@@ -34,6 +40,13 @@ def load_replacements(terms_file: pathlib.Path | None) -> list[tuple[str, str]]:
 
 
 def apply_replacements(text: str, replacements: Iterable[tuple[str, str]]) -> str:
+    """Applied in list order, each pass mutating the running `output` string -
+    so a multi-word phrase (e.g. "fishman island") must come before any
+    shorter phrase it contains ("fishman") in the terms file, or the
+    shorter one would already have consumed it by the time the longer
+    pattern runs. \\b keeps matches on whole words only (so "marine" doesn't
+    also match inside "marines").
+    """
     output = text
     for source, target in replacements:
         pattern = re.compile(rf"(?i)\b{re.escape(source)}\b")

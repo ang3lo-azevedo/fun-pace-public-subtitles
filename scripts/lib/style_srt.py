@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Standalone CLI (also invoked as a subprocess from fun-pace-subs.py) that
+takes a raw transcribed/translated SRT and turns it into fan-sub-style
+output: clean punctuation/capitalization, wrapped to 1-2 lines per cue,
+consecutive hallucinated duplicates merged away.
+"""
 from __future__ import annotations
 
 import argparse
@@ -19,6 +24,9 @@ DEFAULT_REPLACEMENTS = [
 ]
 
 COMMON_FIXES = [
+    # word-word-word / word-word stutter collapse, e.g. Whisper hallucinating
+    # "I I I" - not a full fix for repetition (see merge_consecutive_duplicates
+    # below for that), just the within-one-cue case.
     (r"\b(\w+)\s+\1\s+\1\b", r"\1"),
     (r"\b(\w{3,})\s+\1\b", r"\1"),
     (r"\bkinda\b", "kind of"),
@@ -132,6 +140,11 @@ def clean_spacing_and_punctuation(text: str) -> str:
     t = t.replace(".. .", "...")
     t = re.sub(r"\s+([,;:!?])", r"\1", t)
     t = re.sub(r"([,;:!?])(\S)", r"\1 \2", t)
+    # The rule above also inserts a space inside thousands-separated numbers
+    # (translated bounty amounts like "5,000,000" becoming "5, 000, 000"),
+    # which then invites a bad line break right at that comma. Collapse it
+    # back out for any comma directly between two digits.
+    t = re.sub(r"(\d),\s+(?=\d)", r"\1,", t)
     t = re.sub(r"\s+'", "'", t)
     t = re.sub(r"'\s+", "'", t)
     return t.strip()
@@ -169,6 +182,12 @@ def ensure_end_punctuation(text: str) -> str:
 
 
 def choose_line_break(tokens: list[str], max_line_len: int) -> int:
+    """Picks where to split a too-long cue into two lines by scoring every
+    possible break point and taking the best one, rather than just breaking at
+    the midpoint - this keeps the two lines close in length, prefers breaking
+    right after punctuation or before a conjunction ("and", "but", ...), and
+    avoids leaving a very short first line.
+    """
     if len(tokens) <= 1:
         return 0
 
@@ -231,7 +250,7 @@ def wrap_subtitle_lines(text: str, max_line_len: int = MAX_LINE_LENGTH, max_line
         return [left, right]
 
     # Neither half of the balanced split fits (e.g. long OP/ED lines merged by
-    # alignment) — fall back to a plain greedy wrap so no single line overflows
+    # alignment). Fall back to a plain greedy wrap so no single line overflows
     # the video width and gets force-wrapped again by the renderer.
     return textwrap.wrap(text, width=max_line_len, break_long_words=False) or [text]
 
@@ -267,7 +286,7 @@ def split_cue_for_length(
         return [Cue(index=cue.index, timecode=cue.timecode, text="\n".join(lines))]
 
     # More lines than fit on screen at once (e.g. a long OP/ED line merged by
-    # alignment) — split across multiple cues instead of overflowing past
+    # alignment). Split across multiple cues instead of overflowing past
     # max_lines, timed proportionally to how much text each group holds.
     start_ms, end_ms = split_timecode(cue.timecode)
     total_duration = max(end_ms - start_ms, 1)

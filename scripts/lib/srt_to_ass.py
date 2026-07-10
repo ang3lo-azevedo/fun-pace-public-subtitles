@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Standalone CLI (also invoked as a subprocess from fun-pace-subs.py) that
+converts a styled SRT into a One Pace-styled ASS file: reuses styling from
+a reference ASS if one is given (see resolve_ass_header/resolve_dialogue_style),
+and assigns OP/ED-window cues to a karaoke-style look distinct from regular
+dialogue (see classify_style).
+"""
 from __future__ import annotations
 
 import argparse
@@ -89,6 +95,11 @@ def parse_style_names_from_styles_block(styles_block: str) -> list[str]:
 
 
 def pick_reference_dialogue_style(raw_ass: str, styles_block: str) -> str:
+    """A reference ASS's dialogue style is never named consistently across
+    releases, so this guesses it from usage: whichever non-song/non-credits
+    style actually appears most often on Dialogue lines is almost certainly the
+    main spoken-dialogue style.
+    """
     styles_available = set(parse_style_names_from_styles_block(styles_block))
     if not styles_available:
         return "Main-207-"
@@ -208,6 +219,11 @@ def parse_srt(raw: str) -> list[tuple[int, int, str]]:
 
 
 def classify_style(start_ms: int, end_ms: int, dialogue_style: str, music_style: str = "Karaoke") -> str:
+    """Simple heuristic, not audio analysis: One Piece-style openings run well
+    under 110s, so any cue fully inside that window is assumed to be OP lyrics
+    rather than dialogue. Good enough in practice since actual spoken dialogue
+    essentially never starts before the OP finishes.
+    """
     if end_ms <= 110_000 and start_ms < 110_000:
         return music_style
     return dialogue_style

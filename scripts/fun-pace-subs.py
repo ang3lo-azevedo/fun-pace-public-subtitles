@@ -1,39 +1,42 @@
 #!/usr/bin/env python3
+"""CLI entry point for the subtitle pipeline: argument parsing and orchestration
+only. The actual work (audio extraction, transcription/translation, ASS
+conversion, muxing) lives in scripts/lib/ - see lib/transcription.py for the
+core engine and lib/audio.py + lib/muxing.py for the ffmpeg/mkvmerge glue.
+"""
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
-import urllib.request
-import zipfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_STYLE_REFERENCE = (PROJECT_ROOT / "input" / "styles" / "alabasta 18 en.ass").resolve()
+# Nix's build (see flake.nix) replaces these placeholder strings with real
+# paths baked into the packaged script. Running straight from a checkout
+# instead falls through to the FUN_PACE_DEFAULT_* env vars or, failing that,
+# the project-relative defaults below.
 DEFAULT_TERMS_PLACEHOLDER = "@DEFAULT_TERMS_FILE@"
 DEFAULT_LD_LIBRARY_PATH_PLACEHOLDER = "@DEFAULT_LD_LIBRARY_PATH@"
-CTRANSLATE2_ROCM_RELEASE_VERSION = "v4.8.1"
-CTRANSLATE2_ROCM_RELEASE_URL = f"https://github.com/OpenNMT/CTranslate2/releases/download/{CTRANSLATE2_ROCM_RELEASE_VERSION}/rocm-python-wheels-Linux.zip"
-CTRANSLATE2_ROCM_CACHE_DIR = Path.home() / ".cache" / "fun-pace-subs" / "ctranslate2-rocm"
 
+# scripts/ itself onto sys.path so `lib` resolves as a plain package,
+# regardless of the caller's own working directory.
+sys.path.insert(0, str(SCRIPT_DIR))
 
-def die(message: str) -> None:
-    print(f"Error: {message}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def log(message: str) -> None:
-    print(message, file=sys.stderr)
-
-
-def command_exists(name: str) -> bool:
-    return shutil.which(name) is not None
+from lib.audio import extract_audio, normalize_target_language
+from lib.common import command_exists, die, log, run_command, stem_for
+from lib.muxing import (
+    create_media_symlink,
+    extract_ass_from_mkv,
+    mux_subtitles,
+    resolve_style_reference_ass,
+)
+from lib.transcription import transcribe_audio
 
 
 def resolve_default_terms_file() -> str | None:
@@ -54,339 +57,13 @@ def prepare_subprocess_env() -> dict[str, str]:
     return env
 
 
-def run_command(args: list[str], *, env: dict[str, str] | None = None, capture: bool = False) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        args,
-        check=True,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
-    )
-
-
-def stem_for(path: str) -> str:
-    return Path(path).stem
-
-
-def rocm_available() -> bool:
-    # ROCm commonly exposes /dev/kfd. rocminfo is a secondary signal.
-    return Path("/dev/kfd").exists() or command_exists("rocminfo")
-
-
-def nvidia_available() -> bool:
-    return command_exists("nvidia-smi")
-
-
-def python_wheel_tag() -> str:
-    return f"cp{sys.version_info.major}{sys.version_info.minor}"
-
-
-def rocm_ctranslate2_wheel_path() -> Path:
-    wheel_cache_dir = CTRANSLATE2_ROCM_CACHE_DIR / CTRANSLATE2_ROCM_RELEASE_VERSION / python_wheel_tag()
-    wheel_cache_dir.mkdir(parents=True, exist_ok=True)
-
-    wheel_candidates = sorted(wheel_cache_dir.glob("ctranslate2-*.whl"))
-    if wheel_candidates:
-        return wheel_candidates[0]
-
-    archive_path = wheel_cache_dir / "rocm-python-wheels-Linux.zip"
-    if not archive_path.is_file():
-        log(f"Downloading ROCm CTranslate2 wheel bundle from {CTRANSLATE2_ROCM_RELEASE_URL}")
-        urllib.request.urlretrieve(CTRANSLATE2_ROCM_RELEASE_URL, archive_path)
-
-    with zipfile.ZipFile(archive_path) as archive:
-        for member in archive.namelist():
-            if member.endswith(".whl") and python_wheel_tag() in Path(member).name:
-                extracted_name = Path(member).name
-                extracted_path = wheel_cache_dir / extracted_name
-                if not extracted_path.is_file():
-                    with archive.open(member) as source, open(extracted_path, "wb") as destination:
-                        shutil.copyfileobj(source, destination)
-                return extracted_path
-
-    die(f"Unable to find a ROCm CTranslate2 wheel for {python_wheel_tag()} in {archive_path}")
-
-
-def whisperx_batch_candidates(device: str, requested_batch: str, resolved_batch: str) -> list[str]:
-    if device != "cuda" or requested_batch != "auto":
-        return [resolved_batch]
-
-    ordered = ["32", "24", "16", "12", "8", "6", "4", "2", "1"]
-    if resolved_batch in ordered:
-        ordered.remove(resolved_batch)
-    return [resolved_batch] + ordered
-
-
-def transcribe_audio_faster_whisper(
-    input_audio: str,
-    output_dir: str,
-    model: str,
-    language: str,
-    compute_type: str,
-    device: str,
-    batch_size: str,
-    env: dict[str, str],
-) -> tuple[str, str]:
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    output_srt = str(Path(output_dir) / f"{stem_for(input_audio)}.srt")
-    output_json = str(Path(output_dir) / f"{stem_for(input_audio)}.segments.json")
-    wheel_path = rocm_ctranslate2_wheel_path()
-
-    # Works around a ROCm LLVM codegen bug on RDNA4 (gfx1200/gfx1201) that otherwise
-    # crashes CTranslate2 with "Memory access fault... Page not present" on GPU.
-    # See https://github.com/OpenNMT/CTranslate2/issues/2021.
-    env = dict(env)
-    env.setdefault("CT2_CUDA_ALLOCATOR", "cub_caching")
-
-    python_code = (
-        "import json\n"
-        "import sys\n"
-        "\n"
-        "from faster_whisper import WhisperModel\n"
-        "\n"
-        "def format_timestamp(seconds: float) -> str:\n"
-        "    total_milliseconds = int(round(seconds * 1000))\n"
-        "    hours, remainder = divmod(total_milliseconds, 3600000)\n"
-        "    minutes, remainder = divmod(remainder, 60000)\n"
-        "    seconds, milliseconds = divmod(remainder, 1000)\n"
-        "    return f\"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}\"\n"
-        "\n"
-        "input_audio, output_srt, output_json, model_name, language, compute_type, device = sys.argv[1:8]\n"
-        "if language == 'auto':\n"
-        "    language = None\n"
-        "\n"
-        "model = WhisperModel(model_name, device=device, compute_type=compute_type)\n"
-        "segments, info = model.transcribe(\n"
-        "    input_audio,\n"
-        "    language=language,\n"
-        "    vad_filter=True,\n"
-        "    condition_on_previous_text=False,\n"
-        ")\n"
-        "\n"
-        "raw_segments = []\n"
-        "with open(output_srt, 'w', encoding='utf-8') as handle:\n"
-        "    index = 0\n"
-        "    for segment in segments:\n"
-        "        text = segment.text.strip()\n"
-        "        if not text:\n"
-        "            continue\n"
-        "        index += 1\n"
-        "        handle.write(f'{index}\\n')\n"
-        "        handle.write(\n"
-        "            f'{format_timestamp(segment.start)} --> {format_timestamp(segment.end)}\\n'\n"
-        "        )\n"
-        "        handle.write(f'{text}\\n\\n')\n"
-        "        raw_segments.append({'start': segment.start, 'end': segment.end, 'text': text})\n"
-        "\n"
-        "with open(output_json, 'w', encoding='utf-8') as handle:\n"
-        "    json.dump({'language': info.language, 'segments': raw_segments}, handle)\n"
-    )
-
-    args = [
-        "uvx",
-        "--with",
-        str(wheel_path),
-        "--from",
-        "faster-whisper",
-        "python",
-        "-c",
-        python_code,
-        input_audio,
-        output_srt,
-        output_json,
-        model,
-        language,
-        compute_type,
-        device,
-    ]
-    attempts = [(device, compute_type)]
-    if device == "cuda":
-        attempts.append(("cpu", "int8"))
-
-    log(
-        "Using uvx fallback for faster-whisper with ROCm CTranslate2 wheel: "
-        f"{wheel_path.name}"
-    )
-
-    last_error: subprocess.CalledProcessError | None = None
-    for attempt_device, attempt_compute in attempts:
-        attempt_args = list(args)
-        attempt_args[-2] = attempt_compute
-        attempt_args[-1] = attempt_device
-
-        try:
-            if attempt_device != device:
-                log("ROCm GPU transcription failed, retrying faster-whisper on CPU.")
-            run_command(attempt_args, env=env)
-            return output_srt, output_json
-        except subprocess.CalledProcessError as exc:
-            last_error = exc
-
-    if last_error is not None:
-        raise last_error
-    return output_srt, output_json
-
-
-def align_segments_whisperx(input_audio: str, segments_json: str, output_srt: str, env: dict[str, str]) -> bool:
-    python_code = (
-        "import json\n"
-        "import sys\n"
-        "\n"
-        "import whisperx\n"
-        "\n"
-        "def format_timestamp(seconds: float) -> str:\n"
-        "    total_milliseconds = int(round(seconds * 1000))\n"
-        "    hours, remainder = divmod(total_milliseconds, 3600000)\n"
-        "    minutes, remainder = divmod(remainder, 60000)\n"
-        "    seconds, milliseconds = divmod(remainder, 1000)\n"
-        "    return f\"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}\"\n"
-        "\n"
-        "input_audio, segments_json_path, output_srt = sys.argv[1:4]\n"
-        "with open(segments_json_path, encoding='utf-8') as fh:\n"
-        "    payload = json.load(fh)\n"
-        "\n"
-        "language = payload.get('language') or 'en'\n"
-        "segments = payload.get('segments') or []\n"
-        "if not segments:\n"
-        "    raise SystemExit('No segments to align')\n"
-        "\n"
-        "device = 'cpu'\n"
-        "audio = whisperx.load_audio(input_audio)\n"
-        "model_a, metadata = whisperx.load_align_model(language_code=language, device=device)\n"
-        "result = whisperx.align(segments, model_a, metadata, audio, device, return_char_alignments=False)\n"
-        "\n"
-        "with open(output_srt, 'w', encoding='utf-8') as handle:\n"
-        "    index = 0\n"
-        "    for segment in result['segments']:\n"
-        "        text = (segment.get('text') or '').strip()\n"
-        "        if not text:\n"
-        "            continue\n"
-        "        index += 1\n"
-        "        handle.write(f'{index}\\n')\n"
-        "        handle.write(\n"
-        "            f\"{format_timestamp(segment['start'])} --> {format_timestamp(segment['end'])}\\n\"\n"
-        "        )\n"
-        "        handle.write(f'{text}\\n\\n')\n"
-    )
-
-    args = [
-        "uvx",
-        "--from",
-        "whisperx",
-        "python",
-        "-c",
-        python_code,
-        input_audio,
-        segments_json,
-        output_srt,
-    ]
-
-    try:
-        run_command(args, env=env)
-    except subprocess.CalledProcessError as exc:
-        log(f"WhisperX CPU alignment failed, keeping unaligned timestamps: {exc}")
-        return False
-    return Path(output_srt).is_file()
-
-
-def resolve_whisper_runtime(device: str, compute_type: str, batch_size: str) -> tuple[str, str, str]:
-    resolved_device = device
-    resolved_compute = compute_type
-    resolved_batch = batch_size
-
-    if resolved_device == "auto":
-        resolved_device = "cuda" if (rocm_available() or nvidia_available()) else "cpu"
-
-    if resolved_compute == "auto":
-        resolved_compute = "float16" if resolved_device == "cuda" else "int8"
-
-    if resolved_batch == "auto":
-        resolved_batch = "16" if resolved_device == "cuda" else "4"
-
-    return resolved_device, resolved_compute, resolved_batch
-
-
-def ffprobe_audio_streams(input_path: str, env: dict[str, str]) -> list[dict]:
-    result = run_command(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream=index:stream_tags=language,title",
-            "-of",
-            "json",
-            input_path,
-        ],
-        env=env,
-        capture=True,
-    )
-    payload = json.loads(result.stdout)
-    return payload.get("streams", [])
-
-
-def select_audio_stream_index(input_path: str, env: dict[str, str]) -> int:
-    streams = ffprobe_audio_streams(input_path, env)
-    if not streams:
-        die("No audio streams found")
-
-    def score(stream: dict) -> tuple[int, int]:
-        tags = stream.get("tags") or {}
-        language = str(tags.get("language") or tags.get("LANGUAGE") or "").strip().lower()
-        title = str(tags.get("title") or tags.get("TITLE") or "").strip().lower()
-
-        value = 0
-        if language in {"eng", "en", "english"}:
-            value += 20
-        if "dub" in title:
-            value += 50
-        if "english" in title:
-            value += 10
-
-        # Lower stream index as tiebreaker.
-        idx = int(stream.get("index", 10**9))
-        return value, -idx
-
-    best = max(streams, key=score)
-    return int(best["index"])
-
-
-def extract_audio(input_video: str, output_audio: str, track_index: int | None, env: dict[str, str]) -> None:
-    if not command_exists("ffmpeg"):
-        die("Missing required command: ffmpeg")
-    if not command_exists("ffprobe"):
-        die("Missing required command: ffprobe")
-
-    chosen_index = track_index if track_index is not None else select_audio_stream_index(input_video, env)
-    Path(output_audio).parent.mkdir(parents=True, exist_ok=True)
-
-    log(f"Extracting audio stream {chosen_index} from {Path(input_video).name}")
-    run_command(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-y",
-            "-i",
-            input_video,
-            "-map",
-            f"0:{chosen_index}",
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-c:a",
-            "pcm_s16le",
-            output_audio,
-        ],
-        env=env,
-    )
-
-
 def normalize_srt(input_srt: str, output_srt: str, terms_file: str | None, env: dict[str, str]) -> None:
+    """This, style_srt, and convert_srt_to_ass shell out to scripts/lib/*.py as
+    separate processes (unlike the rest of the pipeline, which imports lib
+    modules directly) because those three are also meant to be run standalone
+    via `fun-pace-subs normalize|style|assify` - keeping them as independent
+    CLI scripts avoids having two different code paths for the same behavior.
+    """
     args = [
         sys.executable,
         str(SCRIPT_DIR / "lib" / "normalize_srt.py"),
@@ -428,325 +105,6 @@ def convert_srt_to_ass(input_srt: str, output_ass: str, env: dict[str, str], sty
     run_command(args, env=env)
 
 
-def transcribe_audio(
-    input_audio: str,
-    output_dir: str,
-    model: str,
-    language: str,
-    compute_type: str,
-    device: str,
-    batch_size: str,
-    env: dict[str, str],
-    force_device: str = "auto",
-) -> str:
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    whisper_env = dict(env)
-
-    rocm_detected = rocm_available()
-    nvidia_detected = nvidia_available()
-    log(
-        "Accelerator detection: "
-        f"rocm={'yes' if rocm_detected else 'no'} "
-        f"nvidia={'yes' if nvidia_detected else 'no'}"
-    )
-
-    resolved_device, resolved_compute, resolved_batch = resolve_whisper_runtime(device, compute_type, batch_size)
-    if rocm_detected and command_exists("uvx") and force_device != "cpu":
-        log(
-            f"Transcription runtime: device={resolved_device} compute_type={resolved_compute} "
-            f"batch_size={resolved_batch}"
-        )
-        log(f"Transcribing {Path(input_audio).name} with faster-whisper model {model}")
-        raw_srt, segments_json = transcribe_audio_faster_whisper(
-            input_audio,
-            output_dir,
-            model,
-            language,
-            resolved_compute,
-            resolved_device,
-            resolved_batch,
-            whisper_env,
-        )
-
-        if command_exists("uvx"):
-            aligned_srt = str(Path(output_dir) / f"{stem_for(input_audio)}.aligned.srt")
-            log("Refining segment timestamps with WhisperX forced alignment (CPU)")
-            if align_segments_whisperx(input_audio, segments_json, aligned_srt, whisper_env):
-                log(f"Alignment refinement applied: {Path(aligned_srt).name}")
-                return aligned_srt
-            log("Alignment refinement unavailable, using unaligned faster-whisper timestamps.")
-
-        return raw_srt
-
-    if command_exists("whisperx"):
-        whisperx_cmd = ["whisperx"]
-    elif command_exists("uvx"):
-        if resolved_device == "cpu" and device == "auto":
-            resolved_device = "cpu"
-            if compute_type == "auto":
-                resolved_compute = "int8"
-            if batch_size == "auto":
-                resolved_batch = "4"
-        whisperx_cmd = ["uvx", "--from", "whisperx", "whisperx"]
-    else:
-        die("Missing required command: whisperx (or uvx fallback)")
-
-    log(
-        f"WhisperX runtime: device={resolved_device} compute_type={resolved_compute} "
-        f"batch_size={resolved_batch}"
-    )
-    log(f"Transcribing {Path(input_audio).name} with WhisperX model {model}")
-
-    whisper_extra_args: list[str] = []
-    if rocm_detected:
-        whisper_extra_args.extend(["--vad_method", "silero"])
-
-    batch_candidates = whisperx_batch_candidates(resolved_device, batch_size, resolved_batch)
-    if len(batch_candidates) > 1:
-        log(f"Auto batch tuning enabled. Candidates: {', '.join(batch_candidates)}")
-
-    last_error: subprocess.CalledProcessError | None = None
-    successful_batch: str | None = None
-
-    for candidate_batch in batch_candidates:
-        try:
-            log(f"WhisperX attempt with batch_size={candidate_batch}")
-            run_command(
-                whisperx_cmd
-                + [
-                    input_audio,
-                    "--model",
-                    model,
-                    "--language",
-                    language,
-                    "--output_dir",
-                    output_dir,
-                    "--output_format",
-                    "srt",
-                    "--compute_type",
-                    resolved_compute,
-                    "--device",
-                    resolved_device,
-                    "--batch_size",
-                    candidate_batch,
-                ]
-                + whisper_extra_args,
-                env=whisper_env,
-            )
-            successful_batch = candidate_batch
-            break
-        except subprocess.CalledProcessError as exc:
-            last_error = exc
-            if candidate_batch == batch_candidates[-1]:
-                break
-            log(f"WhisperX failed with batch_size={candidate_batch}, retrying with a smaller batch.")
-
-    if successful_batch is None:
-        if rocm_detected and resolved_device == "cuda" and force_device != "cuda":
-            log("ROCm GPU transcription failed, switching to ROCm-accelerated CPU mode.")
-            resolved_device = "cpu"
-            resolved_compute = "int8"
-            cpu_batch_candidates = whisperx_batch_candidates("cpu", "auto", "4")
-            last_error = None
-
-            for candidate_batch in cpu_batch_candidates:
-                try:
-                    log(f"WhisperX ROCm-accelerated CPU attempt with batch_size={candidate_batch}")
-                    run_command(
-                        whisperx_cmd
-                        + [
-                            input_audio,
-                            "--model",
-                            model,
-                            "--language",
-                            language,
-                            "--output_dir",
-                            output_dir,
-                            "--output_format",
-                            "srt",
-                            "--compute_type",
-                            resolved_compute,
-                            "--device",
-                            resolved_device,
-                            "--batch_size",
-                            candidate_batch,
-                        ]
-                        + whisper_extra_args,
-                        env=whisper_env,
-                    )
-                    successful_batch = candidate_batch
-                    break
-                except subprocess.CalledProcessError as exc:
-                    last_error = exc
-                    if candidate_batch == cpu_batch_candidates[-1]:
-                        break
-                    log(f"CPU fallback failed with batch_size={candidate_batch}, retrying with a smaller batch.")
-
-        if successful_batch is None:
-            if last_error is not None:
-                raise last_error
-            die("WhisperX failed before a transcription batch could be selected")
-
-    if successful_batch != resolved_batch:
-        log(f"Auto batch tuning selected stable batch_size={successful_batch}")
-
-    return str(Path(output_dir) / f"{stem_for(input_audio)}.srt")
-
-
-def ffprobe_subtitle_streams(input_video: str, env: dict[str, str]) -> list[dict]:
-    result = run_command(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "s",
-            "-show_entries",
-            "stream=index,codec_name:stream_tags=language,title",
-            "-of",
-            "json",
-            input_video,
-        ],
-        env=env,
-        capture=True,
-    )
-    payload = json.loads(result.stdout)
-    return payload.get("streams", [])
-
-
-def choose_ass_subtitle_stream(input_video: str, env: dict[str, str]) -> int:
-    streams = ffprobe_subtitle_streams(input_video, env)
-    if not streams:
-        die("No subtitle streams found in MKV")
-
-    def score(stream: dict) -> tuple[int, int]:
-        codec_name = str(stream.get("codec_name") or "").lower()
-        tags = stream.get("tags") or {}
-        language = str(tags.get("language") or tags.get("LANGUAGE") or "").strip().lower()
-        title = str(tags.get("title") or tags.get("TITLE") or "").strip().lower()
-
-        value = 0
-        if codec_name in {"ass", "ssa"}:
-            value += 100
-        if language in {"eng", "en", "english"}:
-            value += 20
-        if "sign" in title:
-            value -= 10
-
-        idx = int(stream.get("index", 10**9))
-        return value, -idx
-
-    best = max(streams, key=score)
-    return int(best["index"])
-
-
-def extract_ass_from_mkv(input_video: str, output_ass: str, stream_index: int | None, env: dict[str, str]) -> None:
-    if not command_exists("ffmpeg"):
-        die("Missing required command: ffmpeg")
-    if not command_exists("ffprobe"):
-        die("Missing required command: ffprobe")
-
-    chosen_index = stream_index if stream_index is not None else choose_ass_subtitle_stream(input_video, env)
-    Path(output_ass).parent.mkdir(parents=True, exist_ok=True)
-
-    log(f"Extracting subtitle stream {chosen_index} from {Path(input_video).name} to ASS")
-    run_command(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-y",
-            "-i",
-            input_video,
-            "-map",
-            f"0:{chosen_index}",
-            "-c:s",
-            "ass",
-            output_ass,
-        ],
-        env=env,
-    )
-
-
-def maybe_extract_reference_ass(input_video: str, temp_dir: str, env: dict[str, str]) -> str | None:
-    reference_path = str(Path(temp_dir) / "style-reference.ass")
-    try:
-        extract_ass_from_mkv(input_video, reference_path, None, env)
-    except (Exception, SystemExit):
-        return None
-    return reference_path if Path(reference_path).is_file() else None
-
-
-def resolve_style_reference_ass(
-    input_video: str,
-    temp_dir: str,
-    env: dict[str, str],
-    explicit_reference: str | None,
-) -> str | None:
-    if explicit_reference:
-        ref_path = Path(explicit_reference).expanduser().resolve()
-        if ref_path.is_file():
-            return str(ref_path)
-        die(f"Style reference ASS not found: {ref_path}")
-
-    if DEFAULT_STYLE_REFERENCE.is_file():
-        return str(DEFAULT_STYLE_REFERENCE)
-
-    return maybe_extract_reference_ass(input_video, temp_dir, env)
-
-
-def collect_font_attachments(fonts_dir: Path) -> list[str]:
-    if not fonts_dir.is_dir():
-        return []
-
-    attachment_args: list[str] = []
-    font_exts = {".ttf", ".otf", ".ttc", ".otc"}
-    for font_file in sorted(fonts_dir.iterdir()):
-        if font_file.is_file() and font_file.suffix.lower() in font_exts:
-            attachment_args.extend(["--attach-file", str(font_file)])
-    return attachment_args
-
-
-def mux_subtitles(input_video: str, input_subs: str, output_mkv: str, env: dict[str, str], fonts_dir: Path | None = None) -> None:
-    if not command_exists("mkvmerge"):
-        die("Missing required command: mkvmerge")
-
-    attachment_args: list[str] = []
-    if fonts_dir is not None:
-        attachment_args = collect_font_attachments(fonts_dir)
-        if attachment_args:
-            attached_count = len(attachment_args) // 2
-            log(f"Attaching {attached_count} font files from {fonts_dir}")
-
-    Path(output_mkv).parent.mkdir(parents=True, exist_ok=True)
-    log(f"Muxing subtitles into {Path(output_mkv).name}")
-    run_command(
-        [
-            "mkvmerge",
-            "-o",
-            output_mkv,
-            input_video,
-            "--language",
-            "0:eng",
-            "--track-name",
-            "0:English AI subtitles",
-            "--default-track-flag",
-            "0:yes",
-            input_subs,
-        ]
-        + attachment_args,
-        env=env,
-    )
-
-
-def create_media_symlink(link_path: Path, target_path: Path) -> None:
-    link_path.parent.mkdir(parents=True, exist_ok=True)
-    if link_path.exists() or link_path.is_symlink():
-        link_path.unlink()
-
-    relative_target = os.path.relpath(target_path, start=link_path.parent)
-    link_path.symlink_to(relative_target)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="fun-pace-subs")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -758,7 +116,12 @@ def parse_args() -> argparse.Namespace:
     run_cmd.add_argument("--compute-type", default="auto")
     run_cmd.add_argument("--device", default="auto")
     run_cmd.add_argument("--batch-size", default="auto")
-    run_cmd.add_argument("--language", default="en")
+    run_cmd.add_argument("--language", default="ja", help="Source audio language (default: ja, the Japanese track)")
+    run_cmd.add_argument(
+        "--task", choices=["transcribe", "translate"], default="translate",
+        help="'translate' outputs English text from the source-language audio (default). "
+        "'transcribe' outputs text in the source language itself",
+    )
     run_cmd.add_argument("--track-index", type=int)
     run_cmd.add_argument("--output-dir")
     run_cmd.add_argument("--style-reference-ass")
@@ -770,6 +133,7 @@ def parse_args() -> argparse.Namespace:
     extract_cmd.add_argument("input_video")
     extract_cmd.add_argument("output_audio", nargs="?")
     extract_cmd.add_argument("--track-index", type=int)
+    extract_cmd.add_argument("--language", default="ja", help="Preferred audio track language (default: ja)")
 
     transcribe_cmd = sub.add_parser("transcribe")
     transcribe_cmd.add_argument("input_audio")
@@ -778,7 +142,12 @@ def parse_args() -> argparse.Namespace:
     transcribe_cmd.add_argument("--compute-type", default="auto")
     transcribe_cmd.add_argument("--device", default="auto")
     transcribe_cmd.add_argument("--batch-size", default="auto")
-    transcribe_cmd.add_argument("--language", default="en")
+    transcribe_cmd.add_argument("--language", default="ja", help="Source audio language (default: ja, the Japanese track)")
+    transcribe_cmd.add_argument(
+        "--task", choices=["transcribe", "translate"], default="translate",
+        help="'translate' outputs English text from the source-language audio (default). "
+        "'transcribe' outputs text in the source language itself",
+    )
     transcribe_cmd.add_argument("--force-device", choices=["auto", "cuda", "cpu"], default="auto", help="Skip CPU fallback and fail if device unavailable")
 
     normalize_cmd = sub.add_parser("normalize")
@@ -818,6 +187,10 @@ def main() -> None:
         die(f"Terms file not found: {terms_file}")
 
     if args.command == "run":
+        # Full pipeline for one episode: extract audio -> transcribe/translate
+        # -> normalize terminology -> wrap/style -> convert to ASS -> mux.
+        # Each step's output feeds the next. See the individual `lib` modules
+        # for what each stage actually does.
         input_video = args.input_video
         input_path = Path(input_video)
         mux_base_name = re.sub(r"\[Subs Missing\]", "[AI Subs]", input_path.stem)
@@ -837,7 +210,7 @@ def main() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             extracted_audio = str(Path(tmp) / f"{base_name}.wav")
             normalized_srt = str(Path(tmp) / f"{base_name}.styled.srt")
-            extract_audio(input_video, extracted_audio, args.track_index, env)
+            extract_audio(input_video, extracted_audio, args.track_index, env, normalize_target_language(args.language))
 
             raw_srt = transcribe_audio(
                 extracted_audio,
@@ -848,6 +221,7 @@ def main() -> None:
                 args.device,
                 args.batch_size,
                 env,
+                task=args.task,
             )
 
             normalize_srt(raw_srt, normalized_srt, terms_file, env)
@@ -858,6 +232,7 @@ def main() -> None:
                 tmp,
                 env,
                 args.style_reference_ass,
+                DEFAULT_STYLE_REFERENCE,
             )
             if style_reference_ass:
                 log(f"Using MKV subtitle style reference: {Path(style_reference_ass).name}")
@@ -880,7 +255,7 @@ def main() -> None:
 
     if args.command == "extract":
         output_audio = args.output_audio or str(Path(args.input_video).with_suffix(".wav"))
-        extract_audio(args.input_video, output_audio, args.track_index, env)
+        extract_audio(args.input_video, output_audio, args.track_index, env, normalize_target_language(args.language))
         log(f"Wrote extracted audio to {output_audio}")
         return
 
@@ -896,6 +271,7 @@ def main() -> None:
             args.batch_size,
             env,
             force_device=args.force_device,
+            task=args.task,
         )
         log(f"Wrote transcribed subtitles to {raw_srt}")
         return
