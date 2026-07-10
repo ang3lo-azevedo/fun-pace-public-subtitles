@@ -49,6 +49,15 @@ def extract_ass_section(raw: str, section_name: str) -> str | None:
     return "\n".join(collected).strip()
 
 
+# One Pace conventionally renders OP/ED lyrics as small top-of-screen karaoke
+# text, distinct from bottom-center dialogue. Used when a style reference
+# doesn't define its own Karaoke/Translation style.
+FALLBACK_KARAOKE_STYLE = (
+    "Style: Karaoke,Duality,68,&H00292CC7,&H000019FF,&H00FFFFFF,&H00000000,"
+    "0,0,0,0,100,100,4,0,1,6.8,0,8,23,23,23,1"
+)
+
+
 def resolve_ass_header(style_from_ass: pathlib.Path | None) -> str:
     if style_from_ass is None:
         return ASS_HEADER
@@ -59,6 +68,10 @@ def resolve_ass_header(style_from_ass: pathlib.Path | None) -> str:
 
     if not script_info or not styles:
         return ASS_HEADER
+
+    style_names = set(parse_style_names_from_styles_block(styles))
+    if "Karaoke" not in style_names and "Translation" not in style_names:
+        styles = f"{styles}\n{FALLBACK_KARAOKE_STYLE}"
 
     events = "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     return f"{script_info}\n\n{styles}\n\n{events}\n"

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import re
+import textwrap
 from dataclasses import dataclass
 
 MAX_LINE_LENGTH = 34
@@ -208,25 +209,31 @@ def choose_line_break(tokens: list[str], max_line_len: int) -> int:
     return best_index
 
 
-def wrap_subtitle(text: str, max_line_len: int = MAX_LINE_LENGTH, max_lines: int = MAX_LINES_PER_CUE) -> str:
+def wrap_subtitle_lines(text: str, max_line_len: int = MAX_LINE_LENGTH, max_lines: int = MAX_LINES_PER_CUE) -> list[str]:
     words = text.split()
     if not words:
-        return ""
+        return []
 
     if len(text) <= max_line_len:
-        return text
+        return [text]
 
     if max_lines != 2:
-        return text
+        return [text]
 
     break_index = choose_line_break(words, max_line_len)
     left = " ".join(words[:break_index]).strip()
     right = " ".join(words[break_index:]).strip()
 
     if not left or not right:
-        return text
+        return [text]
 
-    return f"{left}\n{right}"
+    if len(left) <= max_line_len and len(right) <= max_line_len:
+        return [left, right]
+
+    # Neither half of the balanced split fits (e.g. long OP/ED lines merged by
+    # alignment) — fall back to a plain greedy wrap so no single line overflows
+    # the video width and gets force-wrapped again by the renderer.
+    return textwrap.wrap(text, width=max_line_len, break_long_words=False) or [text]
 
 
 def stylize_text(text: str, replacements: list[tuple[str, str]]) -> str:
@@ -242,14 +249,51 @@ def stylize_cue(cue: Cue, replacements: list[tuple[str, str]]) -> Cue:
     if not base:
         return Cue(index=cue.index, timecode=cue.timecode, text="")
 
-    wrapped = wrap_subtitle(ensure_end_punctuation(base.strip().rstrip(",;: ")))
-    return Cue(index=cue.index, timecode=cue.timecode, text=wrapped)
+    cleaned = ensure_end_punctuation(base.strip().rstrip(",;: "))
+    return Cue(index=cue.index, timecode=cue.timecode, text=cleaned)
+
+
+def split_cue_for_length(
+    cue: Cue, max_line_len: int = MAX_LINE_LENGTH, max_lines: int = MAX_LINES_PER_CUE
+) -> list[Cue]:
+    if not cue.text:
+        return [cue]
+
+    lines = wrap_subtitle_lines(cue.text, max_line_len, max_lines)
+    if not lines:
+        return [Cue(index=cue.index, timecode=cue.timecode, text="")]
+
+    if len(lines) <= max_lines:
+        return [Cue(index=cue.index, timecode=cue.timecode, text="\n".join(lines))]
+
+    # More lines than fit on screen at once (e.g. a long OP/ED line merged by
+    # alignment) — split across multiple cues instead of overflowing past
+    # max_lines, timed proportionally to how much text each group holds.
+    start_ms, end_ms = split_timecode(cue.timecode)
+    total_duration = max(end_ms - start_ms, 1)
+    groups = [lines[i : i + max_lines] for i in range(0, len(lines), max_lines)]
+    total_chars = sum(len(line) for line in lines) or 1
+
+    result: list[Cue] = []
+    cursor_ms = start_ms
+    consumed_chars = 0
+    for i, group in enumerate(groups):
+        consumed_chars += sum(len(line) for line in group)
+        if i == len(groups) - 1:
+            group_end_ms = end_ms
+        else:
+            group_end_ms = start_ms + int(total_duration * consumed_chars / total_chars)
+            group_end_ms = max(group_end_ms, cursor_ms + 1)
+        result.append(Cue(index=cue.index, timecode=join_timecode(cursor_ms, group_end_ms), text="\n".join(group)))
+        cursor_ms = group_end_ms
+    return result
 
 
 def stylize_cues(cues: list[Cue], replacements: list[tuple[str, str]]) -> list[Cue]:
     output: list[Cue] = []
     for cue in cues:
-        output.append(stylize_cue(cue, replacements))
+        styled = stylize_cue(cue, replacements)
+        output.extend(split_cue_for_length(styled))
     return output
 
 
