@@ -39,6 +39,14 @@ ALIGNMENT_STEP_SECONDS = 10
 # wobble between windows that are really part of one block).
 BLOCK_OFFSET_TOLERANCE_SECONDS = 2.0
 MIN_BLOCK_SECONDS = 5.0
+# A real caption is never displayed for less than this. Anything shorter is
+# a symptom, not a style: a letter-by-letter reveal effect (e.g. for an
+# on-screen "Sign" translation) is built from dozens of separate lines each
+# lasting a tiny fraction of a second - confirmed directly, one release had
+# 71 such lines for a single sign. Checked against the *source* duration,
+# before any cut-boundary clipping, so a legitimate cue that a cut happens
+# to trim short isn't mistaken for one of these.
+MIN_CUE_DURATION_SECONDS = 0.15
 MIN_MATCH_SCORE = 0.02
 
 
@@ -213,21 +221,23 @@ def usable_source_styles(source_ass_text: str) -> set[str]:
         else:
             has_karaoke.setdefault(style, False)
 
-    # A style with no karaoke/typesetting tags at all can still be unusable:
-    # "romaji" sing-along lyrics use plain, unstyled lines just like real
-    # dialogue, and a "Sign" style (on-screen text translations) can use a
-    # letter-by-letter reveal effect built from dozens of separate,
-    # fractional-second-duration lines rather than any override tag at all -
-    # confirmed directly: one release had 71 such lines for a single sign,
-    # which is unusable as a caption but technically invisible to the
-    # tag-based checks above. Unlike song-specific style names, "romaji" and
-    # "sign" are near-universal terms across fansub/DVD releases, so they're
-    # worth excluding by name directly rather than relying on tags alone.
-    never_usable_pattern = re.compile(r"romaji|sign", re.IGNORECASE)
+    # A style with no karaoke/typesetting tags at all can still be a
+    # transliteration track rather than an actual English translation
+    # ("romaji" sing-along lyrics use plain, unstyled lines just like real
+    # dialogue). Unlike song-specific style names, "romaji" is a near-
+    # universal term across fansub/DVD releases, so it's worth checking for
+    # directly rather than relying on tag-based detection alone. A style
+    # like "Sign" (on-screen text translations) is deliberately not excluded
+    # by name here even though it can carry a letter-by-letter reveal effect
+    # built from dozens of fractional-second lines instead of any override
+    # tag - excluding the whole style would also throw away perfectly good,
+    # normal-duration sign translations. See MIN_CUE_DURATION_SECONDS below,
+    # which drops just the unreadable individual lines instead.
+    romaji_pattern = re.compile(r"romaji", re.IGNORECASE)
     return {
         style
         for style, karaoke in has_karaoke.items()
-        if not karaoke and not never_usable_pattern.search(style)
+        if not karaoke and not romaji_pattern.search(style)
     }
 
 
@@ -277,11 +287,41 @@ def extract_source_subtitles(source_video: str, output_ass: str, env: dict[str, 
     extract_ass_from_mkv(source_video, output_ass, stream_index, env)
 
 
+def _retime_line(parts: list[str], edl: list[dict], style_name: str) -> tuple[float, str] | None:
+    start = parse_ass_time(parts[1])
+    end = parse_ass_time(parts[2])
+    if end - start < MIN_CUE_DURATION_SECONDS:
+        return None
+
+    best_overlap = 0.0
+    best_block = None
+    for block in edl:
+        overlap = min(end, block["source_end"]) - max(start, block["source_start"])
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_block = block
+
+    if best_block is None or best_overlap <= 0:
+        return None
+
+    clipped_start = max(start, best_block["source_start"])
+    clipped_end = min(end, best_block["source_end"])
+    offset = best_block["cut_start"] - best_block["source_start"]
+    new_start_s = clipped_start + offset
+    new_end_s = clipped_end + offset
+
+    parts[1] = format_ass_time(new_start_s)
+    parts[2] = format_ass_time(new_end_s)
+    parts[3] = style_name
+    return (new_start_s, ",".join(parts))
+
+
 def retime_and_restyle_ass(
     source_ass: str,
     edl: list[dict],
     output_ass: str,
     style_reference_ass: str | None,
+    op_from_ass: str | None = None,
 ) -> int:
     """Slices the source subtitle file down to only the cues that fall inside
     a kept block, retiming each into the cut's own timeline, and restyles
@@ -298,11 +338,6 @@ def retime_and_restyle_ass(
     header = resolve_ass_header(style_ref_path)
     dialogue_style = resolve_dialogue_style(style_ref_path)
     music_style = resolve_music_style(header, dialogue_style)
-    # The source's own style name already says whether a line is a song
-    # lyric or not, which is more reliable than guessing from where it lands
-    # on the cut's own timeline after retiming (a cut can easily place a
-    # kept scene's dialogue inside what would otherwise look like an
-    # "opening window").
     song_styles = classify_source_styles(raw, keep_styles, dialogue_style)
 
     kept_dialogue: list[str] = []
@@ -315,37 +350,33 @@ def retime_and_restyle_ass(
         source_style = parts[3]
         if source_style not in keep_styles:
             continue
-
-        start = parse_ass_time(parts[1])
-        end = parse_ass_time(parts[2])
-
-        best_overlap = 0.0
-        best_block = None
-        for block in edl:
-            overlap = min(end, block["source_end"]) - max(start, block["source_start"])
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_block = block
-
-        if best_block is None or best_overlap <= 0:
-            continue
-
-        clipped_start = max(start, best_block["source_start"])
-        clipped_end = min(end, best_block["source_end"])
-        offset = best_block["cut_start"] - best_block["source_start"]
-        new_start_s = clipped_start + offset
-        new_end_s = clipped_end + offset
+        if op_from_ass and source_style in song_styles:
+            start = parse_ass_time(parts[1])
+            end = parse_ass_time(parts[2])
+            if end <= OPENING_WINDOW_SECONDS and start < OPENING_WINDOW_SECONDS:
+                continue
         style_name = music_style if source_style in song_styles else dialogue_style
+        result = _retime_line(parts, edl, style_name)
+        if result:
+            kept_dialogue.append(result)
 
-        parts[1] = format_ass_time(new_start_s)
-        parts[2] = format_ass_time(new_end_s)
-        parts[3] = style_name
-        kept_dialogue.append((new_start_s, ",".join(parts)))
+    if op_from_ass:
+        op_raw = Path(op_from_ass).read_text(encoding="utf-8-sig", errors="replace")
+        for line in op_raw.splitlines():
+            if not (line.startswith("Dialogue:") or line.startswith("Comment:")):
+                continue
+            parts = line.split(",", 9)
+            if len(parts) < 10:
+                continue
+            if parts[3] != "Translation":
+                continue
+            if parts[8].strip() == "fx":
+                continue
+            parts[0] = "Dialogue: 0"
+            result = _retime_line(parts, edl, music_style)
+            if result:
+                kept_dialogue.append(result)
 
-    # The source release authors different styles (dialogue, karaoke,
-    # credits...) as separate blocks appended one after another rather than
-    # in strict chronological order, which doesn't matter for playback but
-    # reads oddly if left as-is here now that they're all mixed together.
     kept_dialogue.sort(key=lambda item: item[0])
     kept_dialogue = [line for _, line in kept_dialogue]
 
@@ -361,6 +392,7 @@ def retime_episode_subtitles(
     output_ass: str,
     env: dict[str, str],
     style_reference_ass: str | None = None,
+    op_from_ass: str | None = None,
 ) -> bool:
     """Top-level entry point: pull the embedded subtitle stream out of the
     uncut source episode, extract Japanese audio from both videos to align
@@ -382,6 +414,6 @@ def retime_episode_subtitles(
         edl = build_edl(source_wav, cut_wav, env)
         log(f"Found {len(edl)} kept scene block(s)")
 
-        kept = retime_and_restyle_ass(source_ass, edl, output_ass, style_reference_ass)
+        kept = retime_and_restyle_ass(source_ass, edl, output_ass, style_reference_ass, op_from_ass)
         log(f"Retimed {kept} subtitle cue(s) to {output_ass}")
     return kept > 0

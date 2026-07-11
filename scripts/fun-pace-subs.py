@@ -16,7 +16,8 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
-DEFAULT_STYLE_REFERENCE = (PROJECT_ROOT / "input" / "styles" / "alabasta 18 en.ass").resolve()
+DEFAULT_STYLE_REFERENCE = (PROJECT_ROOT / "input" / "styles" / "jaya 01 en.ass").resolve()
+DEFAULT_OP_REFERENCE = (PROJECT_ROOT / "input" / "styles" / "Hikari e.ass").resolve()
 # Nix's build (see flake.nix) replaces these placeholder strings with real
 # paths baked into the packaged script. Running straight from a checkout
 # instead falls through to the FUN_PACE_DEFAULT_* env vars or, failing that,
@@ -190,6 +191,7 @@ def parse_args() -> argparse.Namespace:
     retime_cmd.add_argument("cut_video", help="The Fun Pace cut to retime the subtitles onto")
     retime_cmd.add_argument("output_ass", nargs="?")
     retime_cmd.add_argument("--style-reference-ass", help="Defaults to the project's usual style reference")
+    retime_cmd.add_argument("--op-from", help="Path to ASS file whose OP lyrics replace the source's. Defaults to the Jaya OP reference")
 
     return parser.parse_args()
 
@@ -341,7 +343,14 @@ def main() -> None:
     if args.command == "retime":
         output_ass = args.output_ass or str(Path(args.cut_video).with_suffix(".retimed.ass"))
         style_reference_ass = args.style_reference_ass or (str(DEFAULT_STYLE_REFERENCE) if DEFAULT_STYLE_REFERENCE.is_file() else None)
-        if not retime_episode_subtitles(args.source_video, args.cut_video, output_ass, env, style_reference_ass):
+        op_from_ass = None
+        if args.op_from:
+            op_path = Path(args.op_from).expanduser().resolve()
+            if op_path.is_file():
+                op_from_ass = str(op_path)
+        elif DEFAULT_OP_REFERENCE.is_file():
+            op_from_ass = str(DEFAULT_OP_REFERENCE)
+        if not retime_episode_subtitles(args.source_video, args.cut_video, output_ass, env, style_reference_ass, op_from_ass):
             die("Retiming failed: no subtitle cues survived the alignment")
         log(f"Wrote retimed subtitles to {output_ass}")
         return
