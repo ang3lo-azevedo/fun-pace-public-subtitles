@@ -1,8 +1,12 @@
 # Fun Pace Subtitle Pipeline
 
-This repo provides a Nix-flake-backed workflow for generating English subtitles for Fun Pace episodes.
-Fun Pace is a filler-focused companion project to [One Pace](https://github.com/one-pace/one-pace-public-subtitles), and it's not limited to any one mini-series (Straw Hats Daily is just one of several Fun Pace releases). Fun Pace episodes ship as Dual Audio (English dub + Japanese) but with no subtitle track at all (`[Subs Missing]`), so this pipeline transcribes the Japanese audio and translates it to English to fill that gap for sub viewers.
+This repo provides a Nix-flake-backed workflow for getting English subtitles onto Fun Pace episodes.
+Fun Pace is a filler-focused companion project to [One Pace](https://github.com/one-pace/one-pace-public-subtitles), and it's not limited to any one mini-series (Straw Hats Daily is just one of several Fun Pace releases). Fun Pace episodes ship as Dual Audio (English dub + Japanese) but with no subtitle track at all (`[Subs Missing]`).
 See [this One Pace + Fun Pace viewing guide](https://gist.github.com/ang3lo-azevedo/0e50cdc0954347854919aa9df24fbf6b) for the broader context this project fits into, and the public One Pace subtitle mirror at https://github.com/one-pace/one-pace-public-subtitles as the reference base for naming conventions, terminology, and subtitle style.
+
+There are two ways this repo fills that gap, and they're not equally preferred:
+- **Subtitle retiming** (the main approach): most Fun Pace releases are trimmed-down cuts of an episode that already has a perfectly good, human-translated subtitle track somewhere, just timed to the wrong (uncut) version of the video. Retiming that existing track onto the cut reuses a real translation instead of generating a new one, so it's the default whenever a matching uncut source episode is available. See "Subtitle retiming" below.
+- **Generating subtitles from scratch** (the fallback): when no existing subtitles cover a scene at all, there's nothing to retime, so this transcribes the Japanese audio with Whisper and translates it to English instead. See "Generating subtitles from scratch" below.
 
 ## Folder structure
 
@@ -13,10 +17,10 @@ See [this One Pace + Fun Pace viewing guide](https://gist.github.com/ang3lo-azev
 - [output/episodes/](output/episodes/): one folder per episode holding both the generated ASS and the muxed MKV.
 - [scripts/fun-pace-subs.py](scripts/fun-pace-subs.py): CLI entrypoint (argument parsing and orchestration only).
 - [scripts/lib/](scripts/lib/): the actual pipeline logic, split by concern:
+	- `retiming.py`: the main approach. Aligns a cut against its uncut source and retimes the source's own existing subtitles onto it (see "Subtitle retiming" below).
 	- `audio.py`: picks the right Dual Audio track and extracts it with ffmpeg.
-	- `transcription.py`: the faster-whisper/WhisperX engine (GPU transcription, CPU alignment, per-segment translation).
-	- `rephrasing.py`: the local LLM naturalness pass (see "Rephrasing pass" below).
-	- `retiming.py`: aligns a cut against its uncut source and retimes an existing subtitle file onto it, instead of generating new subtitles (see "Subtitle retiming" below).
+	- `transcription.py`: the fallback approach's engine: faster-whisper/WhisperX (GPU transcription, CPU alignment, per-segment translation). See "Generating subtitles from scratch" below.
+	- `rephrasing.py`: the fallback approach's local LLM naturalness pass (see "Rephrasing pass" below).
 	- `muxing.py`: style reference resolution and mkvmerge muxing.
 	- `common.py`: small shared helpers (logging, subprocess wrapper, etc).
 	- `normalize_srt.py`, `style_srt.py`, `srt_to_ass.py`: also usable standalone via the `normalize`/`style`/`assify` subcommands.
@@ -24,7 +28,32 @@ See [this One Pace + Fun Pace viewing guide](https://gist.github.com/ang3lo-azev
 Example output path:
 - [output/episodes/[Episode Name with [AI Subs]]/[Episode Name with [AI Subs]].ass and .mkv](output/episodes/)
 
-## What it does
+## Subtitle retiming (the main approach)
+
+Most Fun Pace releases are trimmed-down cuts of an episode that already has a perfectly good, human-translated subtitle track, just timed to the wrong (uncut) version of the video. `scripts/lib/retiming.py` takes advantage of that: instead of transcribing anything, it figures out which parts of the uncut source survived into the cut, and retimes the source episode's own existing subtitles onto those surviving parts. No separate subtitle file is needed. DVD/BD-sourced releases like this ship their subtitles embedded directly in the video, and that embedded track is exactly what gets used.
+
+How it works:
+1. Pull the English subtitle stream straight out of the uncut source episode's own MKV.
+2. That stream almost always carries more than plain dialogue: karaoke-timed opening/ending lyrics, typeset logo effects, sometimes a romanized (not translated) lyrics track. None of those are usable as a normal caption, so any style is dropped if its lines carry per-syllable karaoke timing, switch into vector-drawing mode for a typeset effect, use the subtitle format's Effect field (conventionally reserved for exactly this kind of styling), or if the style's name plainly says "romaji". What's left is plain dialogue, on-screen text, and any already-translated (not transliterated) lyric lines - confirmed directly against a real release before settling on this rule: it landed on exactly the small, clean set of styles actually worth keeping, out of several thousand karaoke-timing lines in the same file.
+3. Extract the Japanese audio from both the uncut source episode and the Fun Pace cut.
+4. Slide a window across the cut's audio and cross-correlate each window against the full source audio track to find its best-matching position. A cut only removes footage, it doesn't alter the audio of what's kept, so this match is exact wherever both tracks share the same content.
+5. Group consecutive windows that share the same offset (source time minus cut time) into a block. A jump in that offset marks a cut boundary between one kept scene and the next. This reconstructs an edit decision list automatically, without needing one to already exist.
+6. Slice the surviving subtitle lines down to only the ones that fall inside a kept block, and shift each one by that block's offset so it lands correctly on the cut's own timeline. A cue that spans a cut boundary is clipped to whichever side it mostly belongs to. One that barely survives the cut at all is dropped rather than left flickering on screen for a fraction of a second.
+7. Restyle every surviving line onto this project's own One Pace-style reference (the same one `run` uses), rather than keeping whatever styling the source release shipped with, so retimed episodes look consistent with generated ones. Which of the surviving styles is an opening/ending lyric line (styled as Karaoke, same as the fallback approach below) versus regular dialogue is decided from the source's own style name, not from where a cue happens to land on the cut's timeline: a title card or a narration line can sit right at the edge of an episode too, exactly like a song does, so guessing from timing alone isn't reliable once cues have already been shifted around by retiming.
+
+This was confirmed directly against real files before being built out into `retiming.py`: the offset blocks came out clean and stable, with clear jumps exactly where a cut boundary would be expected, and correlation scores that stayed well above noise across the whole episode.
+
+Usage:
+
+```text
+scripts/fun-pace-subs.py retime "input/source-episodes/<uncut episode>.mkv" "input/episodes/<fun pace cut>.mkv" "output.ass"
+```
+
+`input/source-episodes/` only needs to hold the specific uncut episode(s) a given Fun Pace release actually draws from. There's no reason to keep an entire series' worth of source video around when only a handful of episodes are in use for a given release.
+
+## Generating subtitles from scratch (the fallback approach)
+
+Retiming only works when a matching uncut source episode is available. When no existing subtitles cover a scene at all, there's nothing to retime, so this transcribes the Japanese audio with Whisper and translates it to English instead:
 
 1. Extracts the Japanese audio track from a Dual Audio MKV (override with `--language en` to use the English dub track instead).
 2. Transcribes that audio **in its own language first** (not translated yet) via `faster-whisper` on the ROCm GPU path, or WhisperX as a CPU fallback.
@@ -44,7 +73,7 @@ Earlier versions of this pipeline ran Whisper's `translate` task directly over t
 
 The current pipeline transcribes in the source language first (accurate segmentation, since there's no cross-language ambiguity), aligns those segments to the audio (precise, audio-locked timestamps), and only then translates each segment. A rolling window of the last couple of translated lines, plus a character-name glossary, gets fed in as context, which meaningfully improves name/terminology consistency without re-merging segments and breaking the timing fix.
 
-This is a real, ongoing quality tradeoff of translating fully offline with Whisper rather than a dedicated MT/LLM translation step. Expect occasional literal or awkward phrasing on idioms Whisper doesn't have context to translate naturally. `data/one-piece-terms.tsv` patches the most common recurring cases (see the `senchou -> Captain`, `mr. nami -> Nami-san` entries for examples of that pattern).
+This is a real, ongoing quality tradeoff of translating fully offline with Whisper rather than a dedicated MT/LLM translation step, and the reason retiming above is preferred whenever it's available. Expect occasional literal or awkward phrasing on idioms Whisper doesn't have context to translate naturally. `data/one-piece-terms.tsv` patches the most common recurring cases (see the `senchou -> Captain`, `mr. nami -> Nami-san` entries for examples of that pattern).
 
 ### Rephrasing pass
 
@@ -52,32 +81,9 @@ Whisper's `translate` task gets the meaning right but reads stiff and overly lit
 
 It runs via `llama-cpp-python`, built from source with the ROCm/HIP backend when a GPU is available (falling back to a plain CPU build otherwise), and the model itself is downloaded once from Hugging Face and cached under `~/.cache/fun-pace-subs/rephrase-model/`. The build itself is cached in a dedicated venv under `~/.cache/fun-pace-subs/rephrase-venv/`, keyed by the build variant (GPU vs CPU) rather than left to `uv`'s own tool cache, which turned out to key only off the package version and not the build flags used - it kept silently reusing a stale CPU-only build even after the flags changed. Skip the whole pass with `--no-rephrase` if you want the faster, more literal output instead.
 
-## Subtitle retiming (an alternative to generating subtitles)
-
-Whisper-based transcription and translation is the only option when no existing subtitles cover a given scene at all. But a lot of Fun Pace releases are trimmed-down cuts of an episode that already has a perfectly good, human-translated subtitle file, just timed to the wrong (uncut) version of the video. In that case, generating new subtitles from scratch means redoing translation work that already exists, and it inherits every failure mode described above (mistranslated names, hallucinated lines, stiff phrasing) for no reason.
-
-`scripts/lib/retiming.py` takes a different approach for that case: instead of transcribing anything, it figures out which parts of the uncut source survived into the cut, and retimes the source episode's own existing subtitles onto those surviving parts. No separate subtitle file is needed. DVD/BD-sourced releases like this ship their subtitles embedded directly in the video, and that embedded track is exactly what gets used.
-
-How it works:
-1. Pull the English subtitle stream straight out of the uncut source episode's own MKV.
-2. That stream almost always carries more than plain dialogue: karaoke-timed opening/ending lyrics, typeset logo effects, sometimes a romanized (not translated) lyrics track. None of those are usable as a normal caption, so any style is dropped if its lines carry per-syllable karaoke timing, switch into vector-drawing mode for a typeset effect, use the subtitle format's Effect field (conventionally reserved for exactly this kind of styling), or if the style's name plainly says "romaji". What's left is plain dialogue, on-screen text, and any already-translated (not transliterated) lyric lines - confirmed directly against a real release before settling on this rule: it landed on exactly the small, clean set of styles actually worth keeping, out of several thousand karaoke-timing lines in the same file.
-3. Extract the Japanese audio from both the uncut source episode and the Fun Pace cut.
-4. Slide a window across the cut's audio and cross-correlate each window against the full source audio track to find its best-matching position. A cut only removes footage, it doesn't alter the audio of what's kept, so this match is exact wherever both tracks share the same content.
-5. Group consecutive windows that share the same offset (source time minus cut time) into a block. A jump in that offset marks a cut boundary between one kept scene and the next. This reconstructs an edit decision list automatically, without needing one to already exist.
-6. Slice the surviving subtitle lines down to only the ones that fall inside a kept block, and shift each one by that block's offset so it lands correctly on the cut's own timeline. A cue that spans a cut boundary is clipped to whichever side it mostly belongs to. One that barely survives the cut at all is dropped rather than left flickering on screen for a fraction of a second.
-7. Restyle every surviving line onto this project's own One Pace-style reference (the same one `run` uses), rather than keeping whatever styling the source release shipped with, so retimed episodes look consistent with AI-generated ones.
-
-This was confirmed directly against real files before being built out into `retiming.py`: the offset blocks came out clean and stable, with clear jumps exactly where a cut boundary would be expected, and correlation scores that stayed well above noise across the whole episode.
-
-Usage:
-
-```text
-scripts/fun-pace-subs.py retime "input/source-episodes/<uncut episode>.mkv" "input/episodes/<fun pace cut>.mkv" "output.ass"
-```
-
-`input/source-episodes/` only needs to hold the specific uncut episode(s) a given Fun Pace release actually draws from. There's no reason to keep an entire series' worth of source video around when only a handful of episodes are in use for a given release.
-
 ## Usage
+
+This section covers the `run` command, i.e. the fallback approach (generating subtitles from scratch). See "Subtitle retiming" above for the `retime` command, used whenever a matching uncut source episode is available.
 
 Cross-platform CLI entrypoint:
 

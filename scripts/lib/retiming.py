@@ -27,7 +27,7 @@ from pathlib import Path
 from lib.audio import extract_audio
 from lib.common import die, log, run_command
 from lib.muxing import choose_ass_subtitle_stream, extract_ass_from_mkv
-from lib.srt_to_ass import classify_style, resolve_ass_header, resolve_dialogue_style, resolve_music_style
+from lib.srt_to_ass import resolve_ass_header, resolve_dialogue_style, resolve_music_style
 
 # Smaller windows find a cut boundary more precisely but are noisier on quiet
 # passages; larger windows are more robust but blur the exact boundary.
@@ -227,6 +227,47 @@ def usable_source_styles(source_ass_text: str) -> set[str]:
     }
 
 
+# Never treat these as song lyrics even if their timing alone would suggest
+# it (a title card and the ending narration both tend to sit right at the
+# edges of an episode too, but neither one is a song).
+NEVER_SONG_STYLE_PATTERN = re.compile(r"title|narrator|sign|credit|warning", re.IGNORECASE)
+OPENING_WINDOW_SECONDS = 130
+ENDING_WINDOW_SECONDS = 200
+
+
+def classify_source_styles(source_ass_text: str, usable_styles: set[str], dialogue_style: str) -> set[str]:
+    """Splits the usable (non-karaoke) styles into "song" vs "dialogue" so
+    each can be mapped onto this project's actual Karaoke/dialogue styles.
+    Timing alone isn't a reliable signal here (a title card and the ending
+    narration both cluster at the edges of an episode the same way a
+    translated ending theme does), so this only calls a style a song if
+    every one of its lines sits inside the opening or ending window AND its
+    name doesn't match a known non-song caption type.
+    """
+    style_times: dict[str, list[tuple[float, float]]] = {}
+    max_end = 0.0
+    for line in source_ass_text.splitlines():
+        if not line.startswith("Dialogue:"):
+            continue
+        parts = line.split(",", 9)
+        if len(parts) < 10 or parts[3] not in usable_styles:
+            continue
+        start, end = parse_ass_time(parts[1]), parse_ass_time(parts[2])
+        style_times.setdefault(parts[3], []).append((start, end))
+        max_end = max(max_end, end)
+
+    song_styles = set()
+    for style, times in style_times.items():
+        if style == dialogue_style or NEVER_SONG_STYLE_PATTERN.search(style):
+            continue
+        if all(
+            end <= OPENING_WINDOW_SECONDS or start >= max_end - ENDING_WINDOW_SECONDS
+            for start, end in times
+        ):
+            song_styles.add(style)
+    return song_styles
+
+
 def extract_source_subtitles(source_video: str, output_ass: str, env: dict[str, str]) -> None:
     stream_index = choose_ass_subtitle_stream(source_video, env)
     extract_ass_from_mkv(source_video, output_ass, stream_index, env)
@@ -253,6 +294,12 @@ def retime_and_restyle_ass(
     header = resolve_ass_header(style_ref_path)
     dialogue_style = resolve_dialogue_style(style_ref_path)
     music_style = resolve_music_style(header, dialogue_style)
+    # The source's own style name already says whether a line is a song
+    # lyric or not, which is more reliable than guessing from where it lands
+    # on the cut's own timeline after retiming (a cut can easily place a
+    # kept scene's dialogue inside what would otherwise look like an
+    # "opening window").
+    song_styles = classify_source_styles(raw, keep_styles, dialogue_style)
 
     kept_dialogue: list[str] = []
     for line in raw.splitlines():
@@ -261,7 +308,8 @@ def retime_and_restyle_ass(
         parts = line.split(",", 9)
         if len(parts) < 10:
             continue
-        if parts[3] not in keep_styles:
+        source_style = parts[3]
+        if source_style not in keep_styles:
             continue
 
         start = parse_ass_time(parts[1])
@@ -283,7 +331,7 @@ def retime_and_restyle_ass(
         offset = best_block["cut_start"] - best_block["source_start"]
         new_start_s = clipped_start + offset
         new_end_s = clipped_end + offset
-        style_name = classify_style(int(new_start_s * 1000), int(new_end_s * 1000), dialogue_style, music_style)
+        style_name = music_style if source_style in song_styles else dialogue_style
 
         parts[1] = format_ass_time(new_start_s)
         parts[2] = format_ass_time(new_end_s)
