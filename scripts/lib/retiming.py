@@ -213,17 +213,21 @@ def usable_source_styles(source_ass_text: str) -> set[str]:
         else:
             has_karaoke.setdefault(style, False)
 
-    # A style with no karaoke/typesetting tags at all can still be a
-    # transliteration track rather than an actual English translation
-    # ("romaji" sing-along lyrics use plain, unstyled lines just like real
-    # dialogue). Unlike song-specific style names, "romaji" is a near-
-    # universal term across fansub/DVD releases, so it's worth checking for
-    # directly rather than relying on tag-based detection alone.
-    romaji_pattern = re.compile(r"romaji", re.IGNORECASE)
+    # A style with no karaoke/typesetting tags at all can still be unusable:
+    # "romaji" sing-along lyrics use plain, unstyled lines just like real
+    # dialogue, and a "Sign" style (on-screen text translations) can use a
+    # letter-by-letter reveal effect built from dozens of separate,
+    # fractional-second-duration lines rather than any override tag at all -
+    # confirmed directly: one release had 71 such lines for a single sign,
+    # which is unusable as a caption but technically invisible to the
+    # tag-based checks above. Unlike song-specific style names, "romaji" and
+    # "sign" are near-universal terms across fansub/DVD releases, so they're
+    # worth excluding by name directly rather than relying on tags alone.
+    never_usable_pattern = re.compile(r"romaji|sign", re.IGNORECASE)
     return {
         style
         for style, karaoke in has_karaoke.items()
-        if not karaoke and not romaji_pattern.search(style)
+        if not karaoke and not never_usable_pattern.search(style)
     }
 
 
