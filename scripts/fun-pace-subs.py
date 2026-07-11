@@ -36,6 +36,8 @@ from lib.muxing import (
     mux_subtitles,
     resolve_style_reference_ass,
 )
+from lib.rephrasing import rephrase_srt
+from lib.retiming import retime_episode_subtitles
 from lib.transcription import transcribe_audio
 
 
@@ -128,6 +130,10 @@ def parse_args() -> argparse.Namespace:
     run_cmd.add_argument("--no-mux", action="store_true")
     run_cmd.add_argument("--mux", action="store_true")
     run_cmd.add_argument("--keep-audio", action="store_true")
+    run_cmd.add_argument(
+        "--no-rephrase", action="store_true",
+        help="Skip the LLM naturalness pass and keep Whisper's literal translation as-is",
+    )
 
     extract_cmd = sub.add_parser("extract")
     extract_cmd.add_argument("input_video")
@@ -160,6 +166,10 @@ def parse_args() -> argparse.Namespace:
     style_cmd.add_argument("output_srt", nargs="?")
     style_cmd.add_argument("--terms-file")
 
+    rephrase_cmd = sub.add_parser("rephrase")
+    rephrase_cmd.add_argument("input_srt")
+    rephrase_cmd.add_argument("output_srt", nargs="?")
+
     assify_cmd = sub.add_parser("assify")
     assify_cmd.add_argument("input_srt")
     assify_cmd.add_argument("output_ass", nargs="?")
@@ -174,6 +184,12 @@ def parse_args() -> argparse.Namespace:
     mux_cmd.add_argument("input_video")
     mux_cmd.add_argument("input_subs")
     mux_cmd.add_argument("output_mkv", nargs="?")
+
+    retime_cmd = sub.add_parser("retime")
+    retime_cmd.add_argument("source_video", help="Uncut source episode with its own embedded subtitles (e.g. input/source-episodes/...)")
+    retime_cmd.add_argument("cut_video", help="The Fun Pace cut to retime the subtitles onto")
+    retime_cmd.add_argument("output_ass", nargs="?")
+    retime_cmd.add_argument("--style-reference-ass", help="Defaults to the project's usual style reference")
 
     return parser.parse_args()
 
@@ -225,6 +241,14 @@ def main() -> None:
             )
 
             normalize_srt(raw_srt, normalized_srt, terms_file, env)
+
+            if not args.no_rephrase:
+                # Runs after terminology normalization (clean names to rephrase around)
+                # and before wrap/style (so line-length limits apply to the final,
+                # rewritten text, not the pre-rewrite literal translation).
+                if not rephrase_srt(normalized_srt, normalized_srt, env):
+                    log("Continuing with the literal translation, unrephrased.")
+
             style_srt(normalized_srt, normalized_srt, terms_file, env)
 
             style_reference_ass = resolve_style_reference_ass(
@@ -288,6 +312,13 @@ def main() -> None:
         log(f"Wrote styled subtitles to {output_srt}")
         return
 
+    if args.command == "rephrase":
+        output_srt = args.output_srt or str(Path(args.input_srt).with_name(f"{stem_for(args.input_srt)}.rephrased.srt"))
+        if not rephrase_srt(args.input_srt, output_srt, env):
+            die("LLM rephrasing failed")
+        log(f"Wrote rephrased subtitles to {output_srt}")
+        return
+
     if args.command == "assify":
         output_ass = args.output_ass or str(Path(args.input_srt).with_suffix(".ass"))
         convert_srt_to_ass(args.input_srt, output_ass, env, args.style_from_ass)
@@ -305,6 +336,14 @@ def main() -> None:
         output_mkv = args.output_mkv or str((PROJECT_ROOT / "output" / "episodes" / mux_base_name / f"{mux_base_name}.mkv").resolve())
         mux_subtitles(args.input_video, args.input_subs, output_mkv, env, fonts_dir=PROJECT_ROOT / "input" / "fonts")
         log(f"Wrote muxed MKV to {output_mkv}")
+        return
+
+    if args.command == "retime":
+        output_ass = args.output_ass or str(Path(args.cut_video).with_suffix(".retimed.ass"))
+        style_reference_ass = args.style_reference_ass or (str(DEFAULT_STYLE_REFERENCE) if DEFAULT_STYLE_REFERENCE.is_file() else None)
+        if not retime_episode_subtitles(args.source_video, args.cut_video, output_ass, env, style_reference_ass):
+            die("Retiming failed: no subtitle cues survived the alignment")
+        log(f"Wrote retimed subtitles to {output_ass}")
         return
 
 

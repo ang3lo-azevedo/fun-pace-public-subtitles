@@ -3,6 +3,12 @@ __pycache__/
 # source videos can be huge; keep reference ASS files in input/styles tracked
 input/episodes/*.mkv
 
+# uncut source episodes, used by the retiming approach to pull their own
+# embedded subtitles and to align a Fun Pace cut against. Too large for a
+# public repo, and the embedded subtitles are someone else's translation
+# work rather than this project's own output.
+input/source-episodes/
+
 # generated outputs
 output/episodes/
 
