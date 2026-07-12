@@ -361,18 +361,38 @@ def retime_and_restyle_ass(
             kept_dialogue.append(result)
 
     if op_from_ass:
+        # Find the source's first song-style OP line time, and the reference's
+        # first OP line time, so we can shift the reference to align with the
+        # source episode's own OP timing (the EDL maps source times, not One
+        # Pace release times).
+        source_first_op = None
+        for line in raw.splitlines():
+            if not line.startswith("Dialogue:"):
+                continue
+            parts = line.split(",", 9)
+            if len(parts) < 10 or parts[3] not in song_styles:
+                continue
+            source_first_op = parse_ass_time(parts[1])
+            break
+
         op_raw = Path(op_from_ass).read_text(encoding="utf-8-sig", errors="replace")
+        ref_first_op = None
+        op_shift = 0.0
         for line in op_raw.splitlines():
             if not (line.startswith("Dialogue:") or line.startswith("Comment:")):
                 continue
             parts = line.split(",", 9)
-            if len(parts) < 10:
-                continue
-            if parts[3] != "Translation":
+            if len(parts) < 10 or parts[3] != "Translation":
                 continue
             if parts[8].strip() == "fx":
                 continue
+            if ref_first_op is None:
+                ref_first_op = parse_ass_time(parts[1])
+                if source_first_op is not None:
+                    op_shift = source_first_op - ref_first_op
             parts[0] = "Dialogue: 0"
+            parts[1] = format_ass_time(parse_ass_time(parts[1]) + op_shift)
+            parts[2] = format_ass_time(parse_ass_time(parts[2]) + op_shift)
             result = _retime_line(parts, edl, music_style)
             if result:
                 kept_dialogue.append(result)
