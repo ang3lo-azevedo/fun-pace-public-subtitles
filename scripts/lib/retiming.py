@@ -38,7 +38,7 @@ ALIGNMENT_STEP_SECONDS = 10
 # the cross-correlation's own jitter (confirmed a fraction of a second of
 # wobble between windows that are really part of one block).
 BLOCK_OFFSET_TOLERANCE_SECONDS = 2.0
-MIN_BLOCK_SECONDS = 0.5
+MIN_BLOCK_SECONDS = 5.0
 # A real caption is never displayed for less than this. Anything shorter is
 # a symptom, not a style: a letter-by-letter reveal effect (e.g. for an
 # on-screen "Sign" translation) is built from dozens of separate lines each
@@ -47,8 +47,13 @@ MIN_BLOCK_SECONDS = 0.5
 # before any cut-boundary clipping, so a legitimate cue that a cut happens
 # to trim short isn't mistaken for one of these.
 MIN_CUE_DURATION_SECONDS = 0.15
-MIN_MATCH_SCORE = 0.001
+MIN_MATCH_SCORE = 0.02
 MAX_GAP_SECONDS = 20.0
+# Source lines known to be from content cut from the Fun Pace edit.
+_BLOCKED_TEXTS = [
+    "TaboTabo bacteria",
+    "After showing the sign",
+]
 
 
 def extract_alignment_audio(input_video: str, output_wav: str, env: dict[str, str], track_index: int | None = None) -> None:
@@ -302,12 +307,8 @@ def _retime_line(parts: list[str], edl: list[dict], style_name: str) -> tuple[fl
             best_overlap = overlap
             best_block = block
 
-    if best_overlap > 0 and best_block is not None:
-        offset = best_block["cut_start"] - best_block["source_start"]
-        new_start_s = start + offset
-        new_end_s = end + offset
-    elif best_block is not None:
-        # Gap — interpolate between surrounding blocks
+    if best_block is None or best_overlap <= 0:
+        # Try interpolation for small gaps where source/cut ratio is similar
         mid = (start + end) / 2
         before = None
         after = None
@@ -317,19 +318,34 @@ def _retime_line(parts: list[str], edl: list[dict], style_name: str) -> tuple[fl
             elif block["source_start"] >= mid and after is None:
                 after = block
         if before is not None and after is not None:
-            if after["source_start"] - before["source_end"] > MAX_GAP_SECONDS:
-                return None
-            ratio = (mid - before["source_end"]) / (after["source_start"] - before["source_end"])
-            cut_mid = before["cut_end"] + ratio * (after["cut_start"] - before["cut_end"])
-            cut_offset = cut_mid - mid
-            new_start_s = start + cut_offset
-            new_end_s = end + cut_offset
-        else:
+            source_gap = after["source_start"] - before["source_end"]
+            cut_gap = after["cut_start"] - before["cut_end"]
+            if cut_gap > 0:
+                ratio = (mid - before["source_end"]) / source_gap
+                cut_mid = before["cut_end"] + ratio * cut_gap
+            else:
+                cut_mid = before["cut_end"]
+            offset = cut_mid - mid
+            new_start_s = start + offset
+            new_end_s = end + offset
+            parts[1] = format_ass_time(new_start_s)
+            parts[2] = format_ass_time(new_end_s)
+            parts[3] = style_name
+            return (new_start_s, ",".join(parts), start)
+        # Edge: before first block or after last block — use nearest block
+        if best_block is not None:
             offset = best_block["cut_start"] - best_block["source_start"]
             new_start_s = start + offset
             new_end_s = end + offset
-    else:
+            parts[1] = format_ass_time(new_start_s)
+            parts[2] = format_ass_time(new_end_s)
+            parts[3] = style_name
+            return (new_start_s, ",".join(parts), start)
         return None
+
+    offset = best_block["cut_start"] - best_block["source_start"]
+    new_start_s = start + offset
+    new_end_s = end + offset
 
     parts[1] = format_ass_time(new_start_s)
     parts[2] = format_ass_time(new_end_s)
@@ -403,6 +419,8 @@ def retime_and_restyle_ass(
             continue
         source_style = parts[3]
         if source_style not in keep_styles:
+            continue
+        if any(t in parts[9] for t in _BLOCKED_TEXTS):
             continue
         if parts[9].startswith("{\\"):
             continue
@@ -518,7 +536,7 @@ def retime_and_restyle_ass(
         for start_s, line, src_s in kept_dialogue:
             parts = line.split(",", 9)
             end_s = parse_ass_time(parts[2])
-            if start_s >= cut_end:
+            if start_s > cut_end:
                 continue
             if end_s > cut_end:
                 parts[2] = format_ass_time(cut_end)
