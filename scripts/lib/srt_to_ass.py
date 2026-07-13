@@ -64,7 +64,7 @@ FALLBACK_KARAOKE_STYLE = (
 )
 
 
-def resolve_ass_header(style_from_ass: pathlib.Path | None) -> str:
+def resolve_ass_header(style_from_ass: pathlib.Path | None, op_style_from_ass: pathlib.Path | None = None) -> str:
     if style_from_ass is None:
         return ASS_HEADER
 
@@ -76,8 +76,21 @@ def resolve_ass_header(style_from_ass: pathlib.Path | None) -> str:
         return ASS_HEADER
 
     style_names = set(parse_style_names_from_styles_block(styles))
-    if "Karaoke" not in style_names and "Translation" not in style_names:
-        styles = f"{styles}\n{FALLBACK_KARAOKE_STYLE}"
+    if "Karaoke" not in style_names or "Translation" not in style_names:
+        if op_style_from_ass is not None:
+            op_raw = op_style_from_ass.read_text(encoding="utf-8-sig", errors="replace")
+            op_styles = extract_ass_section(op_raw, "[V4+ Styles]")
+            if op_styles:
+                for name in parse_style_names_from_styles_block(op_styles):
+                    if name in ("Karaoke", "Translation") and name not in style_names:
+                        style_line = next(
+                            (l for l in op_styles.splitlines() if l.startswith(f"Style: {name},")), None
+                        )
+                        if style_line:
+                            styles = f"{styles}\n{style_line}"
+                            style_names.add(name)
+        if "Karaoke" not in style_names and "Translation" not in style_names:
+            styles = f"{styles}\n{FALLBACK_KARAOKE_STYLE}"
 
     events = "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     return f"{script_info}\n\n{styles}\n\n{events}\n"

@@ -38,7 +38,7 @@ ALIGNMENT_STEP_SECONDS = 10
 # the cross-correlation's own jitter (confirmed a fraction of a second of
 # wobble between windows that are really part of one block).
 BLOCK_OFFSET_TOLERANCE_SECONDS = 2.0
-MIN_BLOCK_SECONDS = 5.0
+MIN_BLOCK_SECONDS = 0.5
 # A real caption is never displayed for less than this. Anything shorter is
 # a symptom, not a style: a letter-by-letter reveal effect (e.g. for an
 # on-screen "Sign" translation) is built from dozens of separate lines each
@@ -47,7 +47,8 @@ MIN_BLOCK_SECONDS = 5.0
 # before any cut-boundary clipping, so a legitimate cue that a cut happens
 # to trim short isn't mistaken for one of these.
 MIN_CUE_DURATION_SECONDS = 0.15
-MIN_MATCH_SCORE = 0.02
+MIN_MATCH_SCORE = 0.001
+MAX_GAP_SECONDS = 20.0
 
 
 def extract_alignment_audio(input_video: str, output_wav: str, env: dict[str, str], track_index: int | None = None) -> None:
@@ -293,7 +294,7 @@ def _retime_line(parts: list[str], edl: list[dict], style_name: str) -> tuple[fl
     if end - start < MIN_CUE_DURATION_SECONDS:
         return None
 
-    best_overlap = 0.0
+    best_overlap = float("-inf")
     best_block = None
     for block in edl:
         overlap = min(end, block["source_end"]) - max(start, block["source_start"])
@@ -301,19 +302,71 @@ def _retime_line(parts: list[str], edl: list[dict], style_name: str) -> tuple[fl
             best_overlap = overlap
             best_block = block
 
-    if best_block is None or best_overlap <= 0:
+    if best_overlap > 0 and best_block is not None:
+        offset = best_block["cut_start"] - best_block["source_start"]
+        new_start_s = start + offset
+        new_end_s = end + offset
+    elif best_block is not None:
+        # Gap — interpolate between surrounding blocks
+        mid = (start + end) / 2
+        before = None
+        after = None
+        for block in edl:
+            if block["source_end"] <= mid:
+                before = block
+            elif block["source_start"] >= mid and after is None:
+                after = block
+        if before is not None and after is not None:
+            if after["source_start"] - before["source_end"] > MAX_GAP_SECONDS:
+                return None
+            ratio = (mid - before["source_end"]) / (after["source_start"] - before["source_end"])
+            cut_mid = before["cut_end"] + ratio * (after["cut_start"] - before["cut_end"])
+            cut_offset = cut_mid - mid
+            new_start_s = start + cut_offset
+            new_end_s = end + cut_offset
+        else:
+            offset = best_block["cut_start"] - best_block["source_start"]
+            new_start_s = start + offset
+            new_end_s = end + offset
+    else:
         return None
-
-    clipped_start = max(start, best_block["source_start"])
-    clipped_end = min(end, best_block["source_end"])
-    offset = best_block["cut_start"] - best_block["source_start"]
-    new_start_s = clipped_start + offset
-    new_end_s = clipped_end + offset
 
     parts[1] = format_ass_time(new_start_s)
     parts[2] = format_ass_time(new_end_s)
     parts[3] = style_name
-    return (new_start_s, ",".join(parts))
+    return (new_start_s, ",".join(parts), start)
+
+
+def _resolve_overlaps(entries: list[tuple[float, str, float]]) -> list[tuple[float, str, float]]:
+    """If two subtitle lines overlap in time, push the later one forward
+    so they don't stack on top of each other. Song-style lines (Karaoke,
+    Translation) are left overlapping intentionally. Entries are (cut_start,
+    line, source_start) triples sorted by source time."""
+    if len(entries) < 2:
+        return entries
+    song_styles = {"Karaoke", "Translation"}
+    resolved: list[tuple[float, str, float]] = [entries[0]]
+    for i in range(1, len(entries)):
+        prev_cut, prev_line, prev_src = resolved[-1]
+        curr_cut, curr_line, curr_src = entries[i]
+        prev_style = prev_line.split(",", 9)[3]
+        curr_style = curr_line.split(",", 9)[3]
+        if prev_style in song_styles or curr_style in song_styles:
+            resolved.append(entries[i])
+            continue
+        prev_end = parse_ass_time(prev_line.split(",", 9)[2])
+        curr_end = parse_ass_time(curr_line.split(",", 9)[2])
+        if curr_cut < prev_end:
+            shift = prev_end - curr_cut + 0.01
+            new_cut = curr_cut + shift
+            new_end = curr_end + shift
+            parts = curr_line.split(",", 9)
+            parts[1] = format_ass_time(new_cut)
+            parts[2] = format_ass_time(new_end)
+            resolved.append((new_cut, ",".join(parts), curr_src))
+        else:
+            resolved.append(entries[i])
+    return resolved
 
 
 def retime_and_restyle_ass(
@@ -335,7 +388,8 @@ def retime_and_restyle_ass(
     keep_styles = usable_source_styles(raw)
 
     style_ref_path = Path(style_reference_ass) if style_reference_ass else None
-    header = resolve_ass_header(style_ref_path)
+    op_ref_path = Path(op_from_ass) if op_from_ass else None
+    header = resolve_ass_header(style_ref_path, op_ref_path)
     dialogue_style = resolve_dialogue_style(style_ref_path)
     music_style = resolve_music_style(header, dialogue_style)
     song_styles = classify_source_styles(raw, keep_styles, dialogue_style)
@@ -350,6 +404,8 @@ def retime_and_restyle_ass(
         source_style = parts[3]
         if source_style not in keep_styles:
             continue
+        if parts[9].startswith("{\\"):
+            continue
         if op_from_ass and source_style in song_styles:
             start = parse_ass_time(parts[1])
             end = parse_ass_time(parts[2])
@@ -361,10 +417,6 @@ def retime_and_restyle_ass(
             kept_dialogue.append(result)
 
     if op_from_ass:
-        # Find the source's first song-style OP line time, and the reference's
-        # first OP line time, so we can shift the reference to align with the
-        # source episode's own OP timing (the EDL maps source times, not One
-        # Pace release times).
         source_first_op = None
         for line in raw.splitlines():
             if not line.startswith("Dialogue:"):
@@ -376,29 +428,105 @@ def retime_and_restyle_ass(
             break
 
         op_raw = Path(op_from_ass).read_text(encoding="utf-8-sig", errors="replace")
+
+        # Find the first OP line time in the reference (any style) for time
+        # alignment with the source episode's OP timing window.
         ref_first_op = None
         op_shift = 0.0
         for line in op_raw.splitlines():
-            if not (line.startswith("Dialogue:") or line.startswith("Comment:")):
+            if not (line.startswith("Comment:") or line.startswith("Dialogue:")):
                 continue
             parts = line.split(",", 9)
-            if len(parts) < 10 or parts[3] != "Translation":
+            if len(parts) < 10:
+                continue
+            if parts[3] not in ("Translation", "Karaoke"):
                 continue
             if parts[8].strip() == "fx":
                 continue
-            if ref_first_op is None:
-                ref_first_op = parse_ass_time(parts[1])
-                if source_first_op is not None:
-                    op_shift = source_first_op - ref_first_op
+            ref_first_op = parse_ass_time(parts[1])
+            if source_first_op is not None:
+                op_shift = source_first_op - ref_first_op - 3.5
+            break
+
+        # Pass 1: English translation (Comment lines, Translation style)
+        # Only keep lines whose shifted time overlaps with the first EDL
+        # block (the one covering the OP window).
+        first_block = edl[0] if edl else None
+        for line in op_raw.splitlines():
+            if not (line.startswith("Comment:") or line.startswith("Dialogue:")):
+                continue
+            parts = line.split(",", 9)
+            if len(parts) < 10:
+                continue
+            if parts[3] != "Translation":
+                continue
+            if parts[8].strip() == "fx":
+                continue
+            shifted_start = parse_ass_time(parts[1]) + op_shift
+            shifted_end = parse_ass_time(parts[2]) + op_shift
+            if shifted_start > OPENING_WINDOW_SECONDS:
+                continue
             parts[0] = "Dialogue: 0"
-            parts[1] = format_ass_time(parse_ass_time(parts[1]) + op_shift)
-            parts[2] = format_ass_time(parse_ass_time(parts[2]) + op_shift)
-            result = _retime_line(parts, edl, music_style)
+            parts[8] = ""
+            parts[1] = format_ass_time(shifted_start)
+            parts[2] = format_ass_time(shifted_end)
+            result = _retime_line(parts, edl, "Translation")
             if result:
                 kept_dialogue.append(result)
 
-    kept_dialogue.sort(key=lambda item: item[0])
-    kept_dialogue = [line for _, line in kept_dialogue]
+        # Pass 2: Japanese romaji (Comment lines, Karaoke style, strip \k tags)
+        for line in op_raw.splitlines():
+            if not (line.startswith("Comment:") or line.startswith("Dialogue:")):
+                continue
+            parts = line.split(",", 9)
+            if len(parts) < 10:
+                continue
+            if parts[3] != "Karaoke":
+                continue
+            text = parts[9]
+            # Keep only lines with \k tags (romaji karaoke), skip fx/empty
+            if not re.search(r"\\k\d", text):
+                continue
+            # Strip \k timing tags, keep just the text
+            text = re.sub(r"\{\\k\d+\}", "", text)
+            if not text.strip():
+                continue
+            parts[0] = "Dialogue: 0"
+            parts[8] = ""
+            parts[9] = text
+            shifted_start = parse_ass_time(parts[1]) + op_shift
+            shifted_end = parse_ass_time(parts[2]) + op_shift
+            if shifted_start > OPENING_WINDOW_SECONDS:
+                continue
+            parts[0] = "Dialogue: 0"
+            parts[8] = ""
+            parts[9] = text
+            parts[1] = format_ass_time(shifted_start)
+            parts[2] = format_ass_time(shifted_end)
+            result = _retime_line(parts, edl, "Karaoke")
+            if result:
+                kept_dialogue.append(result)
+
+    kept_dialogue.sort(key=lambda item: item[2])
+    kept_dialogue = _resolve_overlaps(kept_dialogue)
+
+    # Clip to cut video duration — drop any subtitle that starts past the
+    # last EDL block's cut end, and clip lines that extend past it.
+    if edl:
+        cut_end = max(b["cut_end"] for b in edl)
+        clipped: list[tuple[float, str, float]] = []
+        for start_s, line, src_s in kept_dialogue:
+            parts = line.split(",", 9)
+            end_s = parse_ass_time(parts[2])
+            if start_s >= cut_end:
+                continue
+            if end_s > cut_end:
+                parts[2] = format_ass_time(cut_end)
+                line = ",".join(parts)
+            clipped.append((start_s, line, src_s))
+        kept_dialogue = clipped
+
+    kept_dialogue = [line for _, line, _ in kept_dialogue]
 
     output_path = Path(output_ass)
     output_path.parent.mkdir(parents=True, exist_ok=True)

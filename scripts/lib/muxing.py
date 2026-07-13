@@ -159,7 +159,7 @@ def mux_subtitles(input_video: str, input_subs: str, output_mkv: str, env: dict[
             "--language",
             "0:eng",
             "--track-name",
-            "0:English AI subtitles",
+            "0:English subtitles",
             "--default-track-flag",
             "0:yes",
             input_subs,
