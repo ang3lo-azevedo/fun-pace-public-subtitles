@@ -13,7 +13,9 @@ There are two ways this repo fills that gap, and they're not equally preferred:
 - [input/episodes/](input/episodes/): Fun Pace source MKVs. `run` also symlinks the generated ASS here next to its video so media players auto-load it.
 - [input/source-episodes/](input/source-episodes/): the uncut original episode(s) a Fun Pace release was cut down from, only kept for releases we actually have a matching one for. Their own embedded subtitle track is what gets retimed (see "Subtitle retiming" below). No separate subtitle file is needed.
 - [input/styles/](input/styles/): style reference ASS files.
-- [input/fonts/](input/fonts/): fonts attached during mux.
+  - `jaya 01 en.ass` — default style reference for dialogue (`Main-207-`, `Narrator-207-`, etc.). No OP styles here.
+  - `Hikari e.ass` — OP lyrics source from [One Pace](https://github.com/one-pace/one-pace-public-subtitles/), providing both the translated text (romaji + English) and the `Karaoke`/`Translation` style definitions for song lyrics.
+- [input/fonts/](input/fonts/): fonts attached during mux. All sourced from the One Pace repo (`main/Other/Common Fonts/`).
 - [output/episodes/](output/episodes/): one folder per episode holding both the generated ASS and the muxed MKV.
 - [scripts/fun-pace-subs.py](scripts/fun-pace-subs.py): CLI entrypoint (argument parsing and orchestration only).
 - [scripts/lib/](scripts/lib/): the actual pipeline logic, split by concern:
@@ -42,6 +44,65 @@ How it works:
 7. Restyle every surviving line onto this project's own One Pace-style reference (the same one `run` uses), rather than keeping whatever styling the source release shipped with, so retimed episodes look consistent with generated ones. Which of the surviving styles is an opening/ending lyric line (styled as Karaoke, same as the fallback approach below) versus regular dialogue is decided from the source's own style name, not from where a cue happens to land on the cut's timeline: a title card or a narration line can sit right at the edge of an episode too, exactly like a song does, so guessing from timing alone isn't reliable once cues have already been shifted around by retiming.
 
 This was confirmed directly against real files before being built out into `retiming.py`: the offset blocks came out clean and stable, with clear jumps exactly where a cut boundary would be expected, and correlation scores that stayed well above noise across the whole episode.
+
+### Retiming configuration
+
+The cross-correlation and subtitle placement use these constants in `retiming.py`:
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `ALIGNMENT_WINDOW_SECONDS` | 15 | Window size for audio cross-correlation |
+| `ALIGNMENT_STEP_SECONDS` | 10 | Step between windows |
+| `BLOCK_OFFSET_TOLERANCE_SECONDS` | 2.0 | Max offset jitter before declaring a new block |
+| `MIN_BLOCK_SECONDS` | 5.0 | Minimum block duration (shorter = noise) |
+| `MIN_MATCH_SCORE` | 0.02 | Minimum correlation score (lower = more false positives) |
+| `MIN_CUE_DURATION_SECONDS` | 0.15 | Minimum subtitle duration to keep |
+
+These are the original values from the author. Lowering `MIN_MATCH_SCORE` or `MIN_BLOCK_SECONDS` introduces false-positive EDL blocks that map cut-content scenes, which then produce incorrect subtitles (tested: 0.001/0.5 added ~40 false lines). Raising them drops legitimate short scenes. These values are the empirical optimum.
+
+### Gap handling
+
+Not every source subtitle line overlaps with an EDL block. Lines that don't overlap are handled in three tiers:
+
+1. **Block-adjacent** (-2s tolerance): lines within 2 seconds of a block boundary use that block's offset directly. This catches lines that barely fall outside a block due to EDL boundary imprecision.
+2. **Interpolation**: lines in gaps between two blocks are placed proportionally between them in the cut timeline. This fills genuine gaps where the scene exists but the EDL didn't detect a separate block.
+3. **Dropped**: lines with no nearby blocks at all are dropped.
+
+### Overlap resolution
+
+After retiming, dialogue lines are sorted by their original source time and overlapping pairs are shifted apart. Song-style lines (`Karaoke`, `Translation`) are excluded from this — they're designed to overlap.
+
+### Known false-positive filtering
+
+The cross-correlation occasionally matches audio from scenes that were cut from the Fun Pace edit. Because waveform matching can't distinguish content, a text-based blocklist in `retiming.py` skips known false lines:
+
+```python
+_BLOCKED_TEXTS = [
+    "TaboTabo bacteria",
+    "After showing the sign",
+]
+```
+
+Add patterns here for any other false lines discovered in future source/cut pairs.
+
+### OP (Opening) handling
+
+OP lyrics come from `Hikari e.ass` (One Pace Skypiea "Hikari E") at both top (Japanese romaji, `Karaoke` style) and bottom (English translation, `Translation` style). OP styles are merged from the OP reference file into the output header — the dialogue style reference (`jaya 01 en.ass`) remains untouched.
+
+A manual -3.5s offset correction is applied because the One Pace reference's pre-OP content differs from the DVD source's pre-OP content. This value is specific to the Skypiea/Jaya OP for episodes 131-135 and may need adjustment for other arcs.
+
+### Known manual fixes (episode 01 only)
+
+Two subtitle lines in episode 01 cannot be resolved automatically:
+
+1. **"page 1,254" → "which you said was the most difficult!"**: the EDL maps the source time for "page 1,254" to the correct cut position, but the adjacent "which you said" line is the correct one for that scene. A sed replacement is applied post-generation.
+2. **"But it was a pretty good day"**: this line is in the source's preview chapter (1385-1418s) which has no matching EDL block. It's manually appended at the correct cut timestamp.
+
+Both fixes are applied by the post-processing step that also handles muxing and GitHub release uploads.
+
+### Subtitle track naming
+
+The muxed MKV track is labeled "English subtitles" (originally "English AI subtitles").
 
 Usage:
 
@@ -154,12 +215,16 @@ If GPU transcription still fails for any other reason (e.g. out of VRAM), it aut
 ## Style reference behavior
 
 Default style reference for `run`:
-- [input/styles/alabasta 18 en.ass](input/styles/alabasta%2018%20en.ass)
+- [input/styles/jaya 01 en.ass](input/styles/jaya%2001%20en.ass)
+
+Default OP lyrics reference for `retime`:
+- [input/styles/Hikari e.ass](input/styles/Hikari%20e.ass)
 
 Override per run:
 
 ```text
 scripts/fun-pace-subs.py run "input/episodes/episode.mkv" --style-reference-ass "input/styles/another-style.ass"
+scripts/fun-pace-subs.py retime <source> <cut> --op-from "input/styles/another-op.ass"
 ```
 
 Fallback behavior if no explicit/default style reference is available:
@@ -194,11 +259,12 @@ python3 scripts/fun-pace-subs.py assify "output/episode.styled.srt" "output/epis
 
 ## Output naming
 
-When muxing, filenames are rewritten from `[Subs Missing]` to `[AI Subs]`.
+When muxing via `run` (AI-generated), filenames are rewritten from `[Subs Missing]` to `[AI Subs]`. When muxing via `retime`, the output folder uses `[Retimed Subs]`.
 
 Example:
 - Input: `[FunPace] ... [Subs Missing][1080p].mkv`
-- Output: `[FunPace] ... [AI Subs][1080p].mkv`
+- Run output: `[FunPace] ... [AI Subs][1080p].mkv`
+- Retime output: `[FunPace] ... [Retimed Subs][1080p].mkv`
 
 ## Notes
 

@@ -309,7 +309,7 @@ def _retime_line(parts: list[str], edl: list[dict], style_name: str) -> tuple[fl
 
     # Lines within 2s of a block boundary use the block directly.
     # This prevents adjacent source lines from getting different treatments.
-    if best_block is not None and best_overlap > -15.0:
+    if best_block is not None and best_overlap > -2.0:
         offset = best_block["cut_start"] - best_block["source_start"]
         new_start_s = start + offset
         new_end_s = end + offset
