@@ -307,8 +307,19 @@ def _retime_line(parts: list[str], edl: list[dict], style_name: str) -> tuple[fl
             best_overlap = overlap
             best_block = block
 
-    if best_block is None or best_overlap <= 0:
-        # Try interpolation for small gaps where source/cut ratio is similar
+    # Lines within 2s of a block boundary use the block directly.
+    # This prevents adjacent source lines from getting different treatments.
+    if best_block is not None and best_overlap > -15.0:
+        offset = best_block["cut_start"] - best_block["source_start"]
+        new_start_s = start + offset
+        new_end_s = end + offset
+        parts[1] = format_ass_time(new_start_s)
+        parts[2] = format_ass_time(new_end_s)
+        parts[3] = style_name
+        return (new_start_s, ",".join(parts), start)
+
+    # Larger gap — try interpolation
+    if best_block is not None:
         mid = (start + end) / 2
         before = None
         after = None
