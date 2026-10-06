@@ -1,6 +1,6 @@
 """Optional post-translation polish pass: faster-whisper's translate task gets
-the meaning right but reads stiff and overly literal (confirmed by direct
-side-by-side testing), because it's a speech-to-text model's built-in
+the meaning right but reads stiff and overly literal in side-by-side
+testing, because it's a speech-to-text model's built-in
 translation head, not a fluency-tuned language model. This module runs a
 small local instruction-tuned LLM over each cue to rewrite it more naturally
 while preserving meaning, names, and honorifics - same uvx-isolated-subprocess
@@ -35,7 +35,7 @@ REPHRASE_VENV_DIR = Path.home() / ".cache" / "fun-pace-subs" / "rephrase-venv"
 REPHRASE_VENV_VARIANT_FILE = REPHRASE_VENV_DIR / ".variant"
 
 # CPU-only inference for a 3B model turned out to be the slowest stage in the
-# whole pipeline (confirmed: ~28-30 minutes for one episode's cues, longer
+# whole pipeline (~28-30 minutes for one episode's cues, longer
 # than transcription+alignment+translation combined). llama.cpp's HIP/ROCm
 # backend gives a real ~9x per-token speedup on this hardware and - unlike
 # CTranslate2 - doesn't hit the known RDNA4 LLVM codegen crash, so it's worth
@@ -120,8 +120,8 @@ def rephrase_build_env(env: dict[str, str]) -> tuple[dict[str, str], int]:
 def ensure_rephrase_venv(build_env: dict[str, str], variant: str) -> Path:
     """`uvx --from llama-cpp-python` turned out unusable for this: its tool
     cache keys off the package name/version only, not CMAKE_ARGS, so it
-    silently kept reusing a plain CPU build from before GPU support existed -
-    confirmed directly, twice, including through an explicit `uv cache clean`
+    silently kept reusing a plain CPU build from before GPU support existed,
+    twice, including through an explicit `uv cache clean`
     (which cleared files but the exact same cached archive got reused anyway).
     Managing a plain venv at a fixed path directly sidesteps that: this
     project fully controls when it gets rebuilt, via the variant marker file

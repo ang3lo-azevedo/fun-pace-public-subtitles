@@ -134,7 +134,7 @@ def transcribe_audio_faster_whisper(
         "\n"
         "model = WhisperModel(model_name, device=device, compute_type=compute_type)\n"
         "# Default VAD threshold (0.5) silently drops whole passages of quieter OP/ED\n"
-        "# singing on full-length episodes. 0.2 still left an 18s gap confirmed by\n"
+        "# singing on full-length episodes. 0.2 still left an 18s gap in\n"
         "# isolated-clip testing; 0.1 plus a longer min_silence_duration_ms closes it\n"
         "# without reintroducing the old repetition-spam hallucination.\n"
         "segments, info = model.transcribe(\n"

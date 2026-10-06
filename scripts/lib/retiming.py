@@ -4,9 +4,9 @@ generating new subtitles from scratch. A cut edit keeps the exact same
 underlying audio for every scene it retains (just removes the rest), so
 cross-correlating the cut's audio against the source's finds precisely which
 source time ranges survived and in what order, without needing any existing
-edit-decision-list. Confirmed directly on real files before writing this:
-distinct, stable offset blocks with clear jumps at cut boundaries, matching
-the "Saved" runtime difference expected between the two.
+edit-decision-list. On real files this gives distinct, stable offset blocks
+with clear jumps at cut boundaries, matching the "Saved" runtime difference
+expected between the two.
 
 The subtitle source itself is whatever English subtitle stream is already
 embedded in the source episode's own MKV - no separate subtitle file needed.
@@ -20,8 +20,10 @@ tags don't).
 from __future__ import annotations
 
 import json
+import math
 import re
 import tempfile
+import wave
 from pathlib import Path
 
 from lib.audio import extract_audio
@@ -35,20 +37,42 @@ ALIGNMENT_WINDOW_SECONDS = 15
 ALIGNMENT_STEP_SECONDS = 10
 # Consecutive windows within this offset tolerance count as the same kept
 # scene rather than a new cut boundary - wider than a single frame to absorb
-# the cross-correlation's own jitter (confirmed a fraction of a second of
-# wobble between windows that are really part of one block).
+# the cross-correlation's own jitter (a fraction of a second of wobble
+# between windows that are really part of one block).
 BLOCK_OFFSET_TOLERANCE_SECONDS = 2.0
 MIN_BLOCK_SECONDS = 5.0
 # A real caption is never displayed for less than this. Anything shorter is
 # a symptom, not a style: a letter-by-letter reveal effect (e.g. for an
 # on-screen "Sign" translation) is built from dozens of separate lines each
-# lasting a tiny fraction of a second - confirmed directly, one release had
-# 71 such lines for a single sign. Checked against the *source* duration,
+# lasting a tiny fraction of a second (one release had 71 such lines for a
+# single sign). Checked against the *source* duration,
 # before any cut-boundary clipping, so a legitimate cue that a cut happens
 # to trim short isn't mistaken for one of these.
 MIN_CUE_DURATION_SECONDS = 0.15
 MIN_MATCH_SCORE = 0.02
 MAX_GAP_SECONDS = 20.0
+# Per-cue placement, see _locate_cues(). The blocks above only say roughly
+# where a cue should land: a block's boundary is no more precise than the
+# alignment step, and its offset is an average over windows that can differ
+# by up to the tolerance. So each cue's own stretch of source audio is
+# searched for within this radius of where its nearby blocks predict it.
+CUE_SEARCH_RADIUS_SECONDS = 6.0
+# Short cues are padded out to this much audio for the search; a second or
+# two of speech alone matches too many places to be told apart from noise.
+CUE_MIN_SEGMENT_SECONDS = 4.0
+# Wide enough to reach the end of the cut from the last block, which can
+# stop up to a window plus a step short of it.
+CUE_CANDIDATE_MARGIN_SECONDS = 20.0
+# The padding can find a position from a neighbouring line's audio alone,
+# when the cue itself was cut out right next to it (seen on Marine Base
+# G-8 01). So once located, a cue is scored on its own audio only, at that
+# position: audio that survived into the cut scores close to 1, audio that
+# was cut scores close to 0. A line trimmed partway through lands in between.
+MIN_CUE_MATCH_SCORE = 0.2
+# A cue whose audio can't be matched (e.g. a sign over silence) is still
+# kept at its block's offset if it sits at least this deep inside the block,
+# well clear of the imprecise boundaries.
+BLOCK_INTERIOR_SECONDS = 10.0
 # Source lines known to be from content cut from the Fun Pace edit.
 _BLOCKED_TEXTS = [
     "TaboTabo bacteria",
@@ -130,26 +154,28 @@ def _windowed_matches(source_wav: str, cut_wav: str, env: dict[str, str]) -> lis
     return [tuple(row) for row in json.loads(result.stdout)]
 
 
-def resolve_edl(matches: list[tuple[float, float, float]]) -> list[dict]:
+def resolve_edl(matches: list[tuple[float, float, float, int]]) -> list[dict]:
     """Groups per-window matches into contiguous "kept scene" blocks by
     offset (source_time - cut_time). A block boundary is wherever the offset
     jumps by more than BLOCK_OFFSET_TOLERANCE_SECONDS between consecutive
-    windows - that jump is the cut. Each block's own start/end come from its
+    windows - that jump is the cut - or wherever the cut moves on to a
+    different source episode. Each block's own start/end come from its
     first and last window, extended by half a step on each side so the
     boundary sits between windows rather than exactly on one.
     """
     if not matches:
         return []
 
-    groups: list[list[tuple[float, float, float]]] = []
-    for cut_time, source_time, score in sorted(matches):
+    groups: list[list[tuple[float, float, float, int]]] = []
+    for cut_time, source_time, score, source in sorted(matches):
         offset = source_time - cut_time
         if groups:
             last_offset = groups[-1][-1][1] - groups[-1][-1][0]
-            if abs(offset - last_offset) <= BLOCK_OFFSET_TOLERANCE_SECONDS:
-                groups[-1].append((cut_time, source_time, score))
+            same_source = groups[-1][-1][3] == source
+            if same_source and abs(offset - last_offset) <= BLOCK_OFFSET_TOLERANCE_SECONDS:
+                groups[-1].append((cut_time, source_time, score, source))
                 continue
-        groups.append([(cut_time, source_time, score)])
+        groups.append([(cut_time, source_time, score, source)])
 
     half_step = ALIGNMENT_STEP_SECONDS / 2
     edl = []
@@ -158,9 +184,10 @@ def resolve_edl(matches: list[tuple[float, float, float]]) -> list[dict]:
         cut_end = group[-1][0] + half_step
         if cut_end - cut_start < MIN_BLOCK_SECONDS:
             continue
-        avg_offset = sum(source_time - cut_time for cut_time, source_time, _ in group) / len(group)
+        avg_offset = sum(source_time - cut_time for cut_time, source_time, _, _ in group) / len(group)
         edl.append(
             {
+                "source": group[0][3],
                 "cut_start": max(0.0, cut_start),
                 "cut_end": cut_end,
                 "source_start": max(0.0, cut_start + avg_offset),
@@ -170,11 +197,20 @@ def resolve_edl(matches: list[tuple[float, float, float]]) -> list[dict]:
     return edl
 
 
-def build_edl(source_wav: str, cut_wav: str, env: dict[str, str]) -> list[dict]:
-    matches = _windowed_matches(source_wav, cut_wav, env)
-    edl = resolve_edl(matches)
+def build_edl(source_wavs: list[str], cut_wav: str, env: dict[str, str]) -> list[dict]:
+    """A cut stitched together from more than one source episode is aligned
+    against each of them separately; every window of the cut then goes to
+    whichever source matched it best. Each block records which source (an
+    index into source_wavs) it belongs to.
+    """
+    best: dict[float, tuple[float, float, float, int]] = {}
+    for source, source_wav in enumerate(source_wavs):
+        for cut_time, source_time, score in _windowed_matches(source_wav, cut_wav, env):
+            if cut_time not in best or score > best[cut_time][2]:
+                best[cut_time] = (cut_time, source_time, score, source)
+    edl = resolve_edl(list(best.values()))
     if not edl:
-        die("Could not align any part of the cut against the source episode")
+        die("Could not align any part of the cut against the source episode(s)")
     return edl
 
 
@@ -251,7 +287,21 @@ def usable_source_styles(source_ass_text: str) -> set[str]:
 # it (a title card and the ending narration both tend to sit right at the
 # edges of an episode too, but neither one is a song).
 NEVER_SONG_STYLE_PATTERN = re.compile(r"title|narrator|sign|credit|warning", re.IGNORECASE)
+# A line pinned to a spot on screen or drawn as a shape is typesetting (a
+# title card, a sign), laid out for the source's own resolution and fonts.
+# Other override tags are ordinary dialogue styling and are kept: italics for
+# thoughts, \an8 to move a line to the top, \q2 for wrapping. Dropping every line
+# that starts with a tag lost 28 spoken lines across two episodes.
+TYPESET_TAG_PATTERN = re.compile(r"\\(?:pos|move|org|i?clip|p[1-9])")
+# Font overrides name fonts from the source release that aren't muxed here.
+FONT_TAG_PATTERN = re.compile(r"\\fn[^\\}]*")
 OPENING_WINDOW_SECONDS = 130
+# See _lyrics_shift(). Lyric lines are several seconds apart, so this is
+# tight enough not to pair a line with its neighbour.
+LYRICS_PAIRING_TOLERANCE_SECONDS = 0.5
+# See _exact_reference_offset().
+SCENE_CHANGE_SCORE = 0.3
+SCENE_SNAP_SECONDS = 0.5
 ENDING_WINDOW_SECONDS = 200
 
 
@@ -293,82 +343,163 @@ def extract_source_subtitles(source_video: str, output_ass: str, env: dict[str, 
     extract_ass_from_mkv(source_video, output_ass, stream_index, env)
 
 
-def _retime_line(parts: list[str], edl: list[dict], style_name: str) -> tuple[float, str] | None:
+def _locate_cues(source_wav: str, cut_wav: str, requests: list[dict], env: dict[str, str]) -> list[list[float] | None]:
+    """For each request ({"start", "end", "predictions"}), takes the source
+    audio under that cue and searches the cut for it around every predicted
+    cut start time. Returns the best [cut_start, score] per request (None if
+    there was nothing to search). The score is a normalized cross-correlation
+    of the cue's own (unpadded) audio at the position found: close to 1 when
+    the cut holds that exact audio, close to 0 when it doesn't.
+    Same `uvx --from scipy` subprocess pattern as _windowed_matches().
+    """
+    python_code = (
+        "import json\n"
+        "import sys\n"
+        "\n"
+        "import numpy as np\n"
+        "from scipy.io import wavfile\n"
+        "from scipy.signal import fftconvolve\n"
+        "\n"
+        "source_wav, cut_wav, requests_path, radius, min_segment = sys.argv[1:6]\n"
+        "radius = float(radius)\n"
+        "min_segment = float(min_segment)\n"
+        "\n"
+        "def load_mono(path):\n"
+        "    sr, data = wavfile.read(path)\n"
+        "    if data.dtype != np.float32:\n"
+        "        data = data.astype(np.float32) / 32768.0\n"
+        "    return sr, data\n"
+        "\n"
+        "sr_src, src = load_mono(source_wav)\n"
+        "sr_cut, cut = load_mono(cut_wav)\n"
+        "assert sr_src == sr_cut\n"
+        "sr = sr_src\n"
+        "with open(requests_path, encoding='utf-8') as handle:\n"
+        "    requests = json.load(handle)\n"
+        "\n"
+        "def best_match(region, segment):\n"
+        "    segment_energy = float(np.sum(segment ** 2))\n"
+        "    if len(region) < len(segment) or segment_energy < 1e-6:\n"
+        "        return None\n"
+        "    corr = fftconvolve(region, segment[::-1], mode='valid')\n"
+        "    squares = np.concatenate(([0.0], np.cumsum(region.astype(np.float64) ** 2)))\n"
+        "    energy = squares[len(segment):] - squares[:-len(segment)]\n"
+        "    score = corr / (np.sqrt(energy * segment_energy) + 1e-9)\n"
+        "    idx = int(np.argmax(score))\n"
+        "    return idx, float(score[idx])\n"
+        "\n"
+        "# How far the cue's own audio may sit from where the padded search put it.\n"
+        "wiggle = int(0.02 * sr)\n"
+        "\n"
+        "results = []\n"
+        "for request in requests:\n"
+        "    start, end = request['start'], request['end']\n"
+        "    pad = max(0.25, (min_segment - (end - start)) / 2)\n"
+        "    first = max(0, int((start - pad) * sr))\n"
+        "    last = min(len(src), int((end + pad) * sr))\n"
+        "    segment = src[first:last]\n"
+        "    segment = segment - segment.mean() if len(segment) else segment\n"
+        "    core_first = int(start * sr)\n"
+        "    core = src[core_first:min(len(src), int(end * sr))]\n"
+        "    core = core - core.mean() if len(core) else core\n"
+        "    lead = start - first / sr\n"
+        "    located = None\n"
+        "    for prediction in request['predictions']:\n"
+        "        lo = max(0, int((prediction - lead - radius) * sr))\n"
+        "        hi = min(len(cut), int((prediction - lead + radius) * sr) + len(segment))\n"
+        "        match = best_match(cut[lo:hi], segment)\n"
+        "        if match is not None and (located is None or match[1] > located[1]):\n"
+        "            located = (lo + match[0], match[1])\n"
+        "    best = None\n"
+        "    if located is not None:\n"
+        "        core_at = located[0] + core_first - first\n"
+        "        core_match = best_match(cut[max(0, core_at - wiggle):core_at + len(core) + wiggle], core)\n"
+        "        best = [located[0] / sr + lead, core_match[1] if core_match else 0.0]\n"
+        "    results.append(best)\n"
+        "\n"
+        "print(json.dumps(results))\n"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        requests_path = Path(tmp) / "requests.json"
+        requests_path.write_text(json.dumps(requests), encoding="utf-8")
+        args = [
+            "uvx",
+            "--from",
+            "scipy",
+            "python",
+            "-c",
+            python_code,
+            source_wav,
+            cut_wav,
+            str(requests_path),
+            str(CUE_SEARCH_RADIUS_SECONDS),
+            str(CUE_MIN_SEGMENT_SECONDS),
+        ]
+        result = run_command(args, env=env, capture=True)
+    return json.loads(result.stdout)
+
+
+def _place_cues(
+    cues: list[tuple[float, float]],
+    edl: list[dict],
+    source_wav: str,
+    cut_wav: str,
+    env: dict[str, str],
+) -> list[float | None]:
+    """Decides where each source cue (start, end) starts on the cut's
+    timeline, or None if it didn't survive the cut. The blocks only narrow
+    down where to look; the cue's own audio decides.
+    """
+    requests = []
+    for start, end in cues:
+        predictions: list[float] = []
+        for block in edl:
+            if end <= block["source_start"] - CUE_CANDIDATE_MARGIN_SECONDS:
+                continue
+            if start >= block["source_end"] + CUE_CANDIDATE_MARGIN_SECONDS:
+                continue
+            prediction = start + block["cut_start"] - block["source_start"]
+            if all(abs(prediction - other) > CUE_SEARCH_RADIUS_SECONDS / 2 for other in predictions):
+                predictions.append(prediction)
+        requests.append({"start": start, "end": end, "predictions": predictions})
+
+    placements: list[float | None] = []
+    for (start, end), located in zip(cues, _locate_cues(source_wav, cut_wav, requests, env)):
+        if located is not None and located[1] >= MIN_CUE_MATCH_SCORE:
+            placements.append(located[0])
+            continue
+        interior = next(
+            (
+                block
+                for block in edl
+                if block["source_start"] + BLOCK_INTERIOR_SECONDS <= start
+                and end <= block["source_end"] - BLOCK_INTERIOR_SECONDS
+            ),
+            None,
+        )
+        placements.append(start + interior["cut_start"] - interior["source_start"] if interior else None)
+    return placements
+
+
+def _retime_line(parts: list[str], new_start_s: float, style_name: str) -> tuple[float, str, float]:
     start = parse_ass_time(parts[1])
     end = parse_ass_time(parts[2])
-    if end - start < MIN_CUE_DURATION_SECONDS:
-        return None
-
-    best_overlap = float("-inf")
-    best_block = None
-    for block in edl:
-        overlap = min(end, block["source_end"]) - max(start, block["source_start"])
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_block = block
-
-    # Lines within 2s of a block boundary use the block directly.
-    # This prevents adjacent source lines from getting different treatments.
-    if best_block is not None and best_overlap > -2.0:
-        offset = best_block["cut_start"] - best_block["source_start"]
-        new_start_s = start + offset
-        new_end_s = end + offset
-        parts[1] = format_ass_time(new_start_s)
-        parts[2] = format_ass_time(new_end_s)
-        parts[3] = style_name
-        return (new_start_s, ",".join(parts), start)
-
-    # Larger gap — try interpolation
-    if best_block is not None:
-        mid = (start + end) / 2
-        before = None
-        after = None
-        for block in edl:
-            if block["source_end"] <= mid:
-                before = block
-            elif block["source_start"] >= mid and after is None:
-                after = block
-        if before is not None and after is not None:
-            source_gap = after["source_start"] - before["source_end"]
-            cut_gap = after["cut_start"] - before["cut_end"]
-            if cut_gap > 0:
-                ratio = (mid - before["source_end"]) / source_gap
-                cut_mid = before["cut_end"] + ratio * cut_gap
-            else:
-                cut_mid = before["cut_end"]
-            offset = cut_mid - mid
-            new_start_s = start + offset
-            new_end_s = end + offset
-            parts[1] = format_ass_time(new_start_s)
-            parts[2] = format_ass_time(new_end_s)
-            parts[3] = style_name
-            return (new_start_s, ",".join(parts), start)
-        # Edge: before first block or after last block — use nearest block
-        if best_block is not None:
-            offset = best_block["cut_start"] - best_block["source_start"]
-            new_start_s = start + offset
-            new_end_s = end + offset
-            parts[1] = format_ass_time(new_start_s)
-            parts[2] = format_ass_time(new_end_s)
-            parts[3] = style_name
-            return (new_start_s, ",".join(parts), start)
-        return None
-
-    offset = best_block["cut_start"] - best_block["source_start"]
-    new_start_s = start + offset
-    new_end_s = end + offset
-
     parts[1] = format_ass_time(new_start_s)
-    parts[2] = format_ass_time(new_end_s)
+    parts[2] = format_ass_time(new_start_s + end - start)
     parts[3] = style_name
     return (new_start_s, ",".join(parts), start)
 
 
 def _resolve_overlaps(entries: list[tuple[float, str, float]]) -> list[tuple[float, str, float]]:
-    """If two subtitle lines overlap in time, push the later one forward
-    so they don't stack on top of each other. Song-style lines (Karaoke,
-    Translation) are left overlapping intentionally. Entries are (cut_start,
-    line, source_start) triples sorted by source time."""
+    """A cut that trims the pause between two lines leaves the earlier one
+    still on screen when the later one starts, so the earlier line's end is
+    pulled back to make room. The later line's start is left alone: it was
+    placed against the audio, moving it would put it out of sync. Song-style
+    lines (Karaoke, Translation) are left overlapping intentionally, and so
+    are lines that already overlapped in the source (e.g. an announcement
+    at the top of the screen over dialogue at the bottom). Entries are
+    (cut_start, line, source_start) triples sorted by source time."""
     if len(entries) < 2:
         return entries
     song_styles = {"Karaoke", "Translation"}
@@ -376,52 +507,171 @@ def _resolve_overlaps(entries: list[tuple[float, str, float]]) -> list[tuple[flo
     for i in range(1, len(entries)):
         prev_cut, prev_line, prev_src = resolved[-1]
         curr_cut, curr_line, curr_src = entries[i]
-        prev_style = prev_line.split(",", 9)[3]
+        prev_parts = prev_line.split(",", 9)
         curr_style = curr_line.split(",", 9)[3]
-        if prev_style in song_styles or curr_style in song_styles:
-            resolved.append(entries[i])
-            continue
-        prev_end = parse_ass_time(prev_line.split(",", 9)[2])
-        curr_end = parse_ass_time(curr_line.split(",", 9)[2])
-        if curr_cut < prev_end:
-            shift = prev_end - curr_cut + 0.01
-            new_cut = curr_cut + shift
-            new_end = curr_end + shift
-            parts = curr_line.split(",", 9)
-            parts[1] = format_ass_time(new_cut)
-            parts[2] = format_ass_time(new_end)
-            resolved.append((new_cut, ",".join(parts), curr_src))
-        else:
-            resolved.append(entries[i])
+        prev_end = parse_ass_time(prev_parts[2])
+        overlapping = prev_cut < curr_cut < prev_end
+        # Still at its source duration here, so this is its source end.
+        overlapped_in_source = curr_src < prev_src + (prev_end - prev_cut) - 0.01
+        if (
+            overlapping
+            and not overlapped_in_source
+            and prev_parts[3] not in song_styles
+            and curr_style not in song_styles
+            and curr_cut - prev_cut >= MIN_CUE_DURATION_SECONDS
+        ):
+            prev_parts[2] = format_ass_time(curr_cut)
+            resolved[-1] = (prev_cut, ",".join(prev_parts), prev_src)
+        resolved.append(entries[i])
     return resolved
 
 
-def retime_and_restyle_ass(
+def _reference_lyric_lines(op_raw: str) -> list[tuple[list[str], str]]:
+    """Pulls the plain lyric lines out of a One Pace opening file: the
+    per-line karaoke source lines (kept there as comments, next to the
+    templates and the generated per-syllable effect lines), with their \\k
+    timing tags stripped. Returns (parts, style) pairs, style being
+    Translation (English) or Karaoke (romaji)."""
+    lyric_lines = []
+    for line in op_raw.splitlines():
+        if not (line.startswith("Comment:") or line.startswith("Dialogue:")):
+            continue
+        parts = line.split(",", 9)
+        if len(parts) < 10 or parts[3] not in ("Translation", "Karaoke"):
+            continue
+        effect = parts[8].strip()
+        if effect != "karaoke" and not (effect == "" and re.search(r"\\k\d", parts[9])):
+            continue
+        text = re.sub(r"\{\\k\d+\}", "", parts[9]).strip()
+        if not text:
+            continue
+        parts[0] = "Dialogue: 0"
+        parts[8] = ""
+        parts[9] = text
+        lyric_lines.append((parts, parts[3]))
+    return lyric_lines
+
+
+def _reference_effect_lines(op_raw: str) -> list[list[str]]:
+    """The generated per-syllable karaoke effect lines of a One Pace opening
+    file: what One Pace's own releases actually show. They're positioned for
+    the same 1440x1080 script resolution this project's style reference uses,
+    so they can be reused as they are, only shifted in time."""
+    effect_lines = []
+    for line in op_raw.splitlines():
+        if not line.startswith("Dialogue:"):
+            continue
+        parts = line.split(",", 9)
+        if len(parts) == 10 and parts[3] in ("Translation", "Karaoke") and parts[8].strip() == "fx":
+            effect_lines.append(parts)
+    return effect_lines
+
+
+def _reference_sync_time(op_raw: str) -> float | None:
+    """One Pace opening files carry a comment line named "sync" that starts
+    on a specific scene change of the opening (described in its text)."""
+    for line in op_raw.splitlines():
+        if not line.startswith("Comment:"):
+            continue
+        parts = line.split(",", 9)
+        if len(parts) == 10 and parts[4].strip().lower() == "sync":
+            return parse_ass_time(parts[1])
+    return None
+
+
+def _scene_changes(video: str, until_seconds: float, env: dict[str, str]) -> tuple[list[float], float]:
+    """Frame times of the scene changes in the first until_seconds of the
+    video, and the video's frame rate."""
+    probe = run_command(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", video,
+        ],
+        env=env,
+        capture=True,
+    )
+    numerator, _, denominator = probe.stdout.strip().split(",")[0].partition("/")
+    fps = float(numerator) / float(denominator or 1)
+    result = run_command(
+        [
+            "ffmpeg", "-nostdin", "-t", f"{until_seconds:.3f}", "-i", video, "-map", "0:v:0",
+            "-vf", f"select='gt(scene,{SCENE_CHANGE_SCORE})',showinfo", "-f", "null", "-",
+        ],
+        env=env,
+        capture=True,
+    )
+    # Snapped back onto the frame grid: depending on the ffmpeg version, a
+    # frame's reported time is its own or half a frame later (3.587
+    # from ffmpeg 9 and 3.608 from ffmpeg 7 for the same frame).
+    return [
+        math.floor(float(value) * fps + 0.25) / fps for value in re.findall(r"pts_time:([0-9.]+)", result.stderr)
+    ], fps
+
+
+def _exact_reference_offset(op_raw: str, rough_offset: float, cut_video: str, env: dict[str, str]) -> float:
+    """rough_offset (cut time minus reference time) comes from where the
+    lyric lines landed, which is only good to a few tenths of a second: too
+    loose for per-syllable effects. The reference's sync point is a scene
+    change, so the offset is snapped to put it on the nearest scene change
+    actually found in the cut, which is exact to the frame."""
+    sync = _reference_sync_time(op_raw)
+    if sync is None:
+        log("Warning: the OP reference has no sync line, the OP effects may be slightly out of sync")
+        return rough_offset
+    changes, fps = _scene_changes(cut_video, sync + rough_offset + 2 * SCENE_SNAP_SECONDS, env)
+    # A line's start time is written just before the frame it starts on.
+    sync_frame = math.ceil(sync * fps - 1e-6) / fps
+    nearest = min(changes, key=lambda change: abs(change - (sync_frame + rough_offset)), default=None)
+    if nearest is None or abs(nearest - (sync_frame + rough_offset)) > SCENE_SNAP_SECONDS:
+        log("Warning: no scene change found at the OP reference's sync point, the OP effects may be slightly out of sync")
+        return rough_offset
+    return nearest - sync_frame
+
+
+def _lyrics_shift(source_starts: list[float], reference_starts: list[float]) -> float | None:
+    """How much to add to the reference's times to get the source's: the
+    shift under which the most lyric lines of both start together. The same
+    song is subtitled line by line in both, though not always split into the
+    same lines, and never timed identically, so this takes the median over
+    the lines that do pair up."""
+    best: tuple[int, float, float] | None = None
+    for source_start in source_starts:
+        for reference_start in reference_starts:
+            shift = source_start - reference_start
+            deviations = sorted(
+                min((start - (other + shift) for other in reference_starts), key=abs) for start in source_starts
+            )
+            paired = [deviation for deviation in deviations if abs(deviation) <= LYRICS_PAIRING_TOLERANCE_SECONDS]
+            if len(paired) < 3:
+                continue
+            spread = paired[-1] - paired[0]
+            if best is None or (len(paired), -spread) > (best[0], -best[1]):
+                best = (len(paired), spread, shift + paired[len(paired) // 2])
+    return best[2] if best else None
+
+
+def _retime_source_lines(
     source_ass: str,
     edl: list[dict],
-    output_ass: str,
-    style_reference_ass: str | None,
+    source_wav: str,
+    cut_wav: str,
+    env: dict[str, str],
+    dialogue_style: str,
+    music_style: str,
     op_from_ass: str | None = None,
-) -> int:
-    """Slices the source subtitle file down to only the cues that fall inside
-    a kept block, retiming each into the cut's own timeline, and restyles
-    surviving lines onto this project's own One Pace-style reference rather
-    than keeping whatever styling the source release shipped with. A cue
-    spanning a cut boundary is trimmed to whichever side has the larger
-    overlap; one that's mostly in the trimmed-out part is dropped instead of
-    flickering briefly.
-    """
+    op_offsets: list[float] | None = None,
+) -> list[tuple[float, str, float]]:
+    """Retimes one source episode's own subtitle lines against that source's
+    own blocks. Returns (cut_start, line, source_start) triples. If
+    op_offsets is given, the OP reference's lyric lines are only located, not
+    returned: where each one landed relative to its own time in the reference
+    is appended to op_offsets instead (see _reference_effect_lines())."""
     raw = Path(source_ass).read_text(encoding="utf-8-sig", errors="replace")
     keep_styles = usable_source_styles(raw)
-
-    style_ref_path = Path(style_reference_ass) if style_reference_ass else None
-    op_ref_path = Path(op_from_ass) if op_from_ass else None
-    header = resolve_ass_header(style_ref_path, op_ref_path)
-    dialogue_style = resolve_dialogue_style(style_ref_path)
-    music_style = resolve_music_style(header, dialogue_style)
     song_styles = classify_source_styles(raw, keep_styles, dialogue_style)
 
-    kept_dialogue: list[str] = []
+    pending: list[tuple[list[str], str]] = []
+    op_reference_starts: dict[int, float] = {}
     for line in raw.splitlines():
         if not line.startswith("Dialogue:"):
             continue
@@ -433,116 +683,122 @@ def retime_and_restyle_ass(
             continue
         if any(t in parts[9] for t in _BLOCKED_TEXTS):
             continue
-        if parts[9].startswith("{\\"):
+        if TYPESET_TAG_PATTERN.search(parts[9]):
             continue
+        parts[9] = FONT_TAG_PATTERN.sub("", parts[9]).replace("{}", "")
         if op_from_ass and source_style in song_styles:
             start = parse_ass_time(parts[1])
             end = parse_ass_time(parts[2])
             if end <= OPENING_WINDOW_SECONDS and start < OPENING_WINDOW_SECONDS:
                 continue
         style_name = music_style if source_style in song_styles else dialogue_style
-        result = _retime_line(parts, edl, style_name)
-        if result:
-            kept_dialogue.append(result)
+        pending.append((parts, style_name))
 
     if op_from_ass:
-        source_first_op = None
-        for line in raw.splitlines():
-            if not line.startswith("Dialogue:"):
-                continue
-            parts = line.split(",", 9)
-            if len(parts) < 10 or parts[3] not in song_styles:
-                continue
-            source_first_op = parse_ass_time(parts[1])
-            break
-
         op_raw = Path(op_from_ass).read_text(encoding="utf-8-sig", errors="replace")
+        op_lines = _reference_lyric_lines(op_raw)
+        source_lyric_starts = [
+            parse_ass_time(parts[1])
+            for parts in (line.split(",", 9) for line in raw.splitlines() if line.startswith("Dialogue:"))
+            if len(parts) == 10 and parts[3] in song_styles and parse_ass_time(parts[2]) <= OPENING_WINDOW_SECONDS
+        ]
+        op_shift = _lyrics_shift(
+            source_lyric_starts,
+            [parse_ass_time(parts[1]) for parts, style_name in op_lines if style_name == "Translation"],
+        )
+        if op_shift is None:
+            log("Warning: could not line up the OP reference with the source's own lyrics, leaving the OP out")
+            op_lines = []
 
-        # Find the first OP line time in the reference (any style) for time
-        # alignment with the source episode's OP timing window.
-        ref_first_op = None
-        op_shift = 0.0
-        for line in op_raw.splitlines():
-            if not (line.startswith("Comment:") or line.startswith("Dialogue:")):
-                continue
-            parts = line.split(",", 9)
-            if len(parts) < 10:
-                continue
-            if parts[3] not in ("Translation", "Karaoke"):
-                continue
-            if parts[8].strip() == "fx":
-                continue
-            ref_first_op = parse_ass_time(parts[1])
-            if source_first_op is not None:
-                op_shift = source_first_op - ref_first_op - 3.5
-            break
-
-        # Pass 1: English translation (Comment lines, Translation style)
-        # Only keep lines whose shifted time overlaps with the first EDL
-        # block (the one covering the OP window).
-        first_block = edl[0] if edl else None
-        for line in op_raw.splitlines():
-            if not (line.startswith("Comment:") or line.startswith("Dialogue:")):
-                continue
-            parts = line.split(",", 9)
-            if len(parts) < 10:
-                continue
-            if parts[3] != "Translation":
-                continue
-            if parts[8].strip() == "fx":
-                continue
+        # English translation at the bottom, Japanese romaji at the top.
+        for parts, style_name in op_lines:
+            op_reference_starts[id(parts)] = parse_ass_time(parts[1])
             shifted_start = parse_ass_time(parts[1]) + op_shift
             shifted_end = parse_ass_time(parts[2]) + op_shift
             if shifted_start > OPENING_WINDOW_SECONDS:
                 continue
-            parts[0] = "Dialogue: 0"
-            parts[8] = ""
             parts[1] = format_ass_time(shifted_start)
             parts[2] = format_ass_time(shifted_end)
-            result = _retime_line(parts, edl, "Translation")
-            if result:
-                kept_dialogue.append(result)
+            pending.append((parts, style_name))
 
-        # Pass 2: Japanese romaji (Comment lines, Karaoke style, strip \k tags)
-        for line in op_raw.splitlines():
-            if not (line.startswith("Comment:") or line.startswith("Dialogue:")):
-                continue
-            parts = line.split(",", 9)
-            if len(parts) < 10:
-                continue
-            if parts[3] != "Karaoke":
-                continue
-            text = parts[9]
-            # Keep only lines with \k tags (romaji karaoke), skip fx/empty
-            if not re.search(r"\\k\d", text):
-                continue
-            # Strip \k timing tags, keep just the text
-            text = re.sub(r"\{\\k\d+\}", "", text)
-            if not text.strip():
-                continue
-            parts[0] = "Dialogue: 0"
-            parts[8] = ""
-            parts[9] = text
-            shifted_start = parse_ass_time(parts[1]) + op_shift
-            shifted_end = parse_ass_time(parts[2]) + op_shift
-            if shifted_start > OPENING_WINDOW_SECONDS:
-                continue
-            parts[0] = "Dialogue: 0"
-            parts[8] = ""
-            parts[9] = text
-            parts[1] = format_ass_time(shifted_start)
-            parts[2] = format_ass_time(shifted_end)
-            result = _retime_line(parts, edl, "Karaoke")
-            if result:
-                kept_dialogue.append(result)
-
+    pending = [
+        (parts, style_name)
+        for parts, style_name in pending
+        if parse_ass_time(parts[2]) - parse_ass_time(parts[1]) >= MIN_CUE_DURATION_SECONDS
+    ]
+    cues = [(parse_ass_time(parts[1]), parse_ass_time(parts[2])) for parts, _ in pending]
+    placements = _place_cues(cues, edl, source_wav, cut_wav, env)
+    kept_dialogue = []
+    for (parts, style_name), new_start_s in zip(pending, placements):
+        if new_start_s is None:
+            continue
+        if op_offsets is not None and id(parts) in op_reference_starts:
+            op_offsets.append(new_start_s - op_reference_starts[id(parts)])
+            continue
+        kept_dialogue.append(_retime_line(parts, new_start_s, style_name))
     kept_dialogue.sort(key=lambda item: item[2])
-    kept_dialogue = _resolve_overlaps(kept_dialogue)
+    return _resolve_overlaps(kept_dialogue)
 
-    # Clip to cut video duration — drop any subtitle that starts past the
-    # last EDL block's cut end, and clip lines that extend past it.
+
+def retime_and_restyle_ass(
+    source_asses: list[str],
+    source_wavs: list[str],
+    cut_wav: str,
+    edl: list[dict],
+    output_ass: str,
+    env: dict[str, str],
+    style_reference_ass: str | None,
+    op_from_ass: str | None = None,
+    cut_video: str | None = None,
+) -> int:
+    """Slices each source subtitle file down to only the cues whose audio
+    survived into the cut, retiming each into the cut's own timeline, and
+    restyles surviving lines onto this project's own One Pace-style reference
+    rather than keeping whatever styling the source release shipped with.
+    """
+    style_ref_path = Path(style_reference_ass) if style_reference_ass else None
+    op_ref_path = Path(op_from_ass) if op_from_ass else None
+    header = resolve_ass_header(style_ref_path, op_ref_path)
+    dialogue_style = resolve_dialogue_style(style_ref_path)
+    music_style = resolve_music_style(header, dialogue_style)
+
+    # With an OP reference that carries One Pace's karaoke effect lines (and
+    # the cut's video to sync them against), those are shown instead of the
+    # plain lyric lines.
+    op_raw = op_ref_path.read_text(encoding="utf-8-sig", errors="replace") if op_ref_path else ""
+    op_effect_lines = _reference_effect_lines(op_raw) if cut_video else []
+    op_offsets: list[float] | None = [] if op_effect_lines else None
+
+    kept_dialogue: list[tuple[float, str, float]] = []
+    for source, source_ass in enumerate(source_asses):
+        source_edl = [block for block in edl if block["source"] == source]
+        if not source_edl:
+            continue
+        kept_dialogue.extend(
+            _retime_source_lines(
+                source_ass, source_edl, source_wavs[source], cut_wav, env,
+                dialogue_style, music_style, op_from_ass, op_offsets,
+            )
+        )
+
+    if op_offsets:
+        rough_offset = sorted(op_offsets)[len(op_offsets) // 2]
+        op_offset = _exact_reference_offset(op_raw, rough_offset, cut_video, env)
+        log(f"Placing the OP reference's karaoke effects {op_offset:+.3f}s from their own timing")
+        for parts in op_effect_lines:
+            start = parse_ass_time(parts[1]) + op_offset
+            end = parse_ass_time(parts[2]) + op_offset
+            parts[1] = format_ass_time(start)
+            parts[2] = format_ass_time(end)
+            kept_dialogue.append((start, ",".join(parts), start))
+
+    # Clip to the cut's own duration: drop any subtitle that starts past
+    # its end, and clip lines that extend past it. Not the last block's end:
+    # the last alignment window stops short of the end of the cut, and lines
+    # in that tail are placed by their own audio like any other.
     if edl:
-        cut_end = max(b["cut_end"] for b in edl)
+        with wave.open(cut_wav, "rb") as handle:
+            cut_end = handle.getnframes() / handle.getframerate()
         clipped: list[tuple[float, str, float]] = []
         for start_s, line, src_s in kept_dialogue:
             parts = line.split(",", 9)
@@ -564,33 +820,42 @@ def retime_and_restyle_ass(
 
 
 def retime_episode_subtitles(
-    source_video: str,
+    source_videos: list[str],
     cut_video: str,
     output_ass: str,
     env: dict[str, str],
     style_reference_ass: str | None = None,
     op_from_ass: str | None = None,
 ) -> bool:
-    """Top-level entry point: pull the embedded subtitle stream out of the
-    uncut source episode, extract Japanese audio from both videos to align
+    """Top-level entry point: pull the embedded subtitle stream out of each
+    uncut source episode, extract Japanese audio from every video to align
     them, and retime + restyle the source subtitles onto the cut's timeline.
     """
     with tempfile.TemporaryDirectory() as tmp:
-        source_ass = str(Path(tmp) / "source.ass")
-        log(f"Extracting embedded subtitles from {Path(source_video).name}")
-        extract_source_subtitles(source_video, source_ass, env)
+        source_asses: list[str] = []
+        source_wavs: list[str] = []
+        for source, source_video in enumerate(source_videos):
+            source_ass = str(Path(tmp) / f"source{source}.ass")
+            log(f"Extracting embedded subtitles from {Path(source_video).name}")
+            extract_source_subtitles(source_video, source_ass, env)
+            source_asses.append(source_ass)
 
-        source_wav = str(Path(tmp) / "source.wav")
+            source_wav = str(Path(tmp) / f"source{source}.wav")
+            log(f"Extracting Japanese audio from {Path(source_video).name}")
+            extract_alignment_audio(source_video, source_wav, env)
+            source_wavs.append(source_wav)
+
         cut_wav = str(Path(tmp) / "cut.wav")
-        log(f"Extracting Japanese audio from {Path(source_video).name}")
-        extract_alignment_audio(source_video, source_wav, env)
         log(f"Extracting Japanese audio from {Path(cut_video).name}")
         extract_alignment_audio(cut_video, cut_wav, env)
 
         log("Cross-correlating audio to find kept scene ranges")
-        edl = build_edl(source_wav, cut_wav, env)
+        edl = build_edl(source_wavs, cut_wav, env)
         log(f"Found {len(edl)} kept scene block(s)")
+        for source, source_video in enumerate(source_videos):
+            if not any(block["source"] == source for block in edl):
+                log(f"Warning: no part of the cut matched {Path(source_video).name}")
 
-        kept = retime_and_restyle_ass(source_ass, edl, output_ass, style_reference_ass, op_from_ass)
+        kept = retime_and_restyle_ass(source_asses, source_wavs, cut_wav, edl, output_ass, env, style_reference_ass, op_from_ass, cut_video)
         log(f"Retimed {kept} subtitle cue(s) to {output_ass}")
     return kept > 0

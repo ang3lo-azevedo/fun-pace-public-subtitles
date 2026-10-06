@@ -17,7 +17,6 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_STYLE_REFERENCE = (PROJECT_ROOT / "input" / "styles" / "jaya 01 en.ass").resolve()
-DEFAULT_OP_REFERENCE = (PROJECT_ROOT / "input" / "styles" / "Hikari e.ass").resolve()
 # Nix's build (see flake.nix) replaces these placeholder strings with real
 # paths baked into the packaged script. Running straight from a checkout
 # instead falls through to the FUN_PACE_DEFAULT_* env vars or, failing that,
@@ -187,11 +186,20 @@ def parse_args() -> argparse.Namespace:
     mux_cmd.add_argument("output_mkv", nargs="?")
 
     retime_cmd = sub.add_parser("retime")
-    retime_cmd.add_argument("source_video", help="Uncut source episode with its own embedded subtitles (e.g. input/source-episodes/...)")
+    retime_cmd.add_argument(
+        "source_videos", nargs="+", metavar="source_video",
+        help="Uncut source episode(s) with their own embedded subtitles (e.g. input/source-episodes/...). "
+        "Pass every episode the cut draws from",
+    )
     retime_cmd.add_argument("cut_video", help="The Fun Pace cut to retime the subtitles onto")
-    retime_cmd.add_argument("output_ass", nargs="?")
+    retime_cmd.add_argument("--output-ass", help="Defaults to the episode's own folder under output/episodes/")
     retime_cmd.add_argument("--style-reference-ass", help="Defaults to the project's usual style reference")
-    retime_cmd.add_argument("--op-from", help="Path to ASS file whose OP lyrics replace the source's. Defaults to the Jaya OP reference")
+    retime_cmd.add_argument(
+        "--op-from",
+        help="Path to ASS file whose OP lyrics replace the source's (e.g. input/styles/Hikari e.ass). "
+        "Defaults to keeping the source's own translated OP lyrics",
+    )
+    retime_cmd.add_argument("--no-mux", action="store_true")
 
     return parser.parse_args()
 
@@ -341,18 +349,34 @@ def main() -> None:
         return
 
     if args.command == "retime":
-        output_ass = args.output_ass or str(Path(args.cut_video).with_suffix(".retimed.ass"))
+        # Same output layout as `run`: one folder per episode holding both
+        # the ASS and the muxed MKV.
+        cut_path = Path(args.cut_video)
+        if cut_path.suffix.lower() == ".ass":
+            die("The last argument must be the Fun Pace cut; pass the output path with --output-ass")
+        mux_base_name = re.sub(r"\[Subs Missing\]", "[Retimed Subs]", cut_path.stem)
+        episode_root = (PROJECT_ROOT / "output" / "episodes" / mux_base_name).resolve()
+        output_ass_path = Path(args.output_ass).resolve() if args.output_ass else episode_root / f"{mux_base_name}.ass"
+        output_ass = str(output_ass_path)
         style_reference_ass = args.style_reference_ass or (str(DEFAULT_STYLE_REFERENCE) if DEFAULT_STYLE_REFERENCE.is_file() else None)
         op_from_ass = None
         if args.op_from:
             op_path = Path(args.op_from).expanduser().resolve()
-            if op_path.is_file():
-                op_from_ass = str(op_path)
-        elif DEFAULT_OP_REFERENCE.is_file():
-            op_from_ass = str(DEFAULT_OP_REFERENCE)
-        if not retime_episode_subtitles(args.source_video, args.cut_video, output_ass, env, style_reference_ass, op_from_ass):
+            if not op_path.is_file():
+                die(f"OP reference ASS not found: {op_path}")
+            op_from_ass = str(op_path)
+        if not retime_episode_subtitles(args.source_videos, args.cut_video, output_ass, env, style_reference_ass, op_from_ass):
             die("Retiming failed: no subtitle cues survived the alignment")
         log(f"Wrote retimed subtitles to {output_ass}")
+
+        media_symlink_path = cut_path.with_suffix(".ass")
+        create_media_symlink(media_symlink_path, output_ass_path)
+        log(f"Linked media subtitle path {media_symlink_path} -> {output_ass_path}")
+
+        if not args.no_mux:
+            muxed_output = str(episode_root / f"{mux_base_name}.mkv")
+            mux_subtitles(args.cut_video, output_ass, muxed_output, env, fonts_dir=PROJECT_ROOT / "input" / "fonts")
+            log(f"Wrote muxed MKV to {muxed_output}")
         return
 
 
