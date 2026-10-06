@@ -8,6 +8,35 @@ There are two ways this repo fills that gap, and they're not equally preferred:
 - **Subtitle retiming** (the main approach): most Fun Pace releases are trimmed-down cuts of an episode that already has a human-translated subtitle track somewhere, just timed to the wrong (uncut) version of the video. Retiming that existing track onto the cut reuses that translation instead of generating a new one, so it's the default whenever a matching uncut source episode is available. See "Subtitle retiming" below.
 - **Generating subtitles from scratch** (the fallback): when no existing subtitles cover a scene at all, there's nothing to retime, so this transcribes the Japanese audio with Whisper and translates it to English instead. See "Generating subtitles from scratch" below.
 
+## Contents
+
+- [Folder structure](#folder-structure)
+- [Subtitle retiming (the main approach)](#subtitle-retiming-the-main-approach)
+  - [Retiming configuration](#retiming-configuration)
+  - [Per-line placement](#per-line-placement)
+  - [Overlap resolution](#overlap-resolution)
+  - [Short inserts](#short-inserts)
+  - [Missing source episodes](#missing-source-episodes)
+  - [Manual lines](#manual-lines)
+  - [Multiple source episodes](#multiple-source-episodes)
+  - [OP (Opening) handling](#op-opening-handling)
+  - [Known manual fixes (episode 01 only)](#known-manual-fixes-episode-01-only)
+  - [Subtitle track naming](#subtitle-track-naming)
+  - [Adding a new episode](#adding-a-new-episode)
+  - [Releasing an episode](#releasing-an-episode)
+  - [Retime usage](#retime-usage)
+- [Generating subtitles from scratch (the fallback approach)](#generating-subtitles-from-scratch-the-fallback-approach)
+  - [Why two stages (transcribe+align, then translate)](#why-two-stages-transcribealign-then-translate)
+  - [Rephrasing pass](#rephrasing-pass)
+- [Usage](#usage)
+- [Dependencies](#dependencies)
+  - [Managed by Nix (from `flake.nix`)](#managed-by-nix-from-flakenix)
+  - [Python packages resolved dynamically by `uvx`](#python-packages-resolved-dynamically-by-uvx)
+  - [System prerequisites (outside this repo)](#system-prerequisites-outside-this-repo)
+- [Style reference behavior](#style-reference-behavior)
+- [Output naming](#output-naming)
+- [Notes](#notes)
+
 ## Folder structure
 
 - [input/episodes/](input/episodes/): Fun Pace source MKVs. `run` and `retime` also symlink the generated ASS here next to its video so media players auto-load it.
@@ -17,6 +46,7 @@ There are two ways this repo fills that gap, and they're not equally preferred:
   - `Hikari e.ass`, `Bon Voyage.ass`: optional OP lyrics sources for `retime --op-from` (one per opening), from [One Pace](https://github.com/one-pace/one-pace-public-subtitles/), providing both the translated text (romaji + English) and the `Karaoke`/`Translation` style definitions for song lyrics.
 - [input/fonts/](input/fonts/): fonts attached during mux. All sourced from the One Pace repo (`main/Other/Common Fonts/`).
 - [output/episodes/](output/episodes/): one folder per episode holding both the generated ASS and the muxed MKV.
+- `data/manual-lines/`: hand-written subtitle lines per cut, for the few spots `retime` can't cover (see "Manual lines" below). Create it when first needed.
 - [scripts/fun-pace-subs.py](scripts/fun-pace-subs.py): CLI entrypoint (argument parsing and orchestration only).
 - [scripts/lib/](scripts/lib/): the actual pipeline logic, split by concern:
 	- `retiming.py`: the main approach. Aligns a cut against its uncut source episode(s) and retimes the source's own existing subtitles onto it (see "Subtitle retiming" below).
@@ -24,6 +54,7 @@ There are two ways this repo fills that gap, and they're not equally preferred:
 	- `transcription.py`: the fallback approach's engine: faster-whisper/WhisperX (GPU transcription, CPU alignment, per-segment translation). See "Generating subtitles from scratch" below.
 	- `rephrasing.py`: the fallback approach's local LLM naturalness pass (see "Rephrasing pass" below).
 	- `muxing.py`: style reference resolution and mkvmerge muxing.
+	- `releasing.py`: publishes an episode's subtitle file as a GitHub release (see "Releasing an episode" below).
 	- `common.py`: small shared helpers (logging, subprocess wrapper, etc).
 	- `normalize_srt.py`, `style_srt.py`, `srt_to_ass.py`: also usable standalone via the `normalize`/`style`/`assify` subcommands.
 
@@ -62,6 +93,12 @@ The cross-correlation and subtitle placement use these constants in `retiming.py
 | `CUE_CANDIDATE_MARGIN_SECONDS` | 20.0 | How close to a block a line must be for that block to predict it |
 | `MIN_CUE_MATCH_SCORE` | 0.2 | Minimum match of a line's own audio to keep it |
 | `BLOCK_INTERIOR_SECONDS` | 10.0 | How deep inside a block an unmatched line must sit to be kept anyway |
+| `INSERT_WINDOW_SECONDS` | 2.5 | Window size of the short-insert pass |
+| `INSERT_EXPLAINED_SCORE` | 0.35 | From this up, a window is explained by its block |
+| `INSERT_MATCH_SCORE` | 0.6 | Minimum full-source match for an unexplained window to become a block |
+| `MIN_UNACCOUNTED_SECONDS` | 4.0 | Shortest unmatched stretch that is reported as possibly missing a source |
+| `WEAK_CUE_MATCH_SCORE` | 0.5 | Below this, a match gives way to a confident one it collides with |
+| `CONFIDENT_CUE_MATCH_SCORE` | 0.8 | From this up, a match displaces a weak one it collides with |
 
 The first six are the original values from the author. Lowering `MIN_MATCH_SCORE` or `MIN_BLOCK_SECONDS` introduces false-positive EDL blocks that map cut-content scenes, which then produce incorrect subtitles (tested: 0.001/0.5 added ~40 false lines). Raising them drops legitimate short scenes. These values worked best in testing. The per-line values were set on Marine Base G-8 01 (see "Per-line placement" below).
 
@@ -72,12 +109,47 @@ The blocks only say roughly where a line should land: a block's boundary is no m
 1. The source audio under the line (padded to at least 4 seconds) is searched for in the cut, within 6 seconds of where each nearby block predicts it.
 2. At the position found, the line's own audio (without the padding) is compared against the cut. If it matches (normalized cross-correlation of at least 0.2), the line is placed at exactly that position. Audio that survived into the cut scores close to 1, audio that was cut scores close to 0, and a line trimmed partway through lands in between. The padding is left out of this check because it can match on a neighbouring line's audio alone, when the line itself was cut out right next to it.
 3. A line whose audio can't be matched at all (e.g. a sign over silence) is kept at its block's offset only if it sits at least 10 seconds inside the block. Otherwise it's dropped: its scene didn't survive the cut.
+4. A weak match (below 0.5) is dropped if it lands on top of a confident one (0.8 or more) that it didn't overlap in the source. Two lines can't both be spoken there, and the confident one is.
 
 This is what keeps lines from removed scenes out of the output. `_BLOCKED_TEXTS` in `retiming.py` remains as a manual blocklist for any line that still slips through.
 
 ### Overlap resolution
 
 When the cut trims the pause between two lines, the earlier one would still be on screen when the later one starts. The earlier line's end is pulled back to make room. The later line's start is never moved, since it was placed against the audio. Song-style lines (`Karaoke`, `Translation`) are excluded from this, since they're designed to overlap. Lines that already overlapped in the source are left alone too (e.g. an announcement at the top of the screen over dialogue at the bottom).
+
+### Short inserts
+
+A stretch of the cut shorter than an alignment window (15 seconds) never dominates one, so it gets no block of its own. If it comes from an episode nothing else in the cut uses, that episode isn't matched at all. Marine Base G-8 02 does this: one 5-second exchange at 3:52 is taken from the end of episode 197, in the middle of footage from 198.
+
+After the blocks are built, a second pass catches these:
+
+1. The cut is checked in 2.5-second windows against what the nearby blocks predict. A window that matches (0.35 or more) or is near-silent is explained.
+2. Every unexplained window is searched for across each source episode in full. A match of 0.6 or more becomes a small block of its own, and consecutive windows from the same place are joined.
+
+Lines are then placed against these blocks like any other.
+
+### Missing source episodes
+
+Whatever the short-insert pass still can't find in any source is reported, if it runs for 4 seconds or more, and `retime` asks for another episode to try:
+
+```text
+8s of the cut match none of the source episodes given:
+  3:51 - 3:58
+These are either not from the series (a title card, re-mixed audio) or from a missing source episode.
+Path to another source episode to try (Enter to continue without):
+```
+
+Give the path of an episode (drag the file into the terminal) and it's added to the sources and aligned, without redoing the others. The question comes back as long as something is still unaccounted for; press Enter to go on without, which leaves those stretches unsubtitled. When the command isn't run from a terminal, the stretches are only listed.
+
+### Manual lines
+
+Sometimes a cut re-edits the dialogue itself: it swaps in a line from elsewhere, or keeps only the first word of a line, over re-mixed audio. No source subtitle fits that, so nothing is placed there. For those spots, `retime` picks up hand-written lines from `data/manual-lines/<cut file name>.ass` if that file exists, and adds its `Dialogue:` lines to the output as they are. They must already be timed to the cut and use this project's styles (`Main-207-` for dialogue):
+
+```text
+Dialogue: 0,0:03:54.90,0:03:55.90,Main-207-,,0,0,0,,What's going on?
+```
+
+Lines starting with `;` are comments; use them to note why each line is there.
 
 ### Multiple source episodes
 
@@ -110,7 +182,7 @@ Two subtitle lines in episode 01 could not be resolved automatically. Both were 
 1. **"page 1,254" → "which you said was the most difficult!"**: the EDL maps the source time for "page 1,254" to the correct cut position, but the adjacent "which you said" line is the correct one for that scene. A sed replacement is applied post-generation.
 2. **"But it was a pretty good day"**: this line is in the source's preview chapter (1385-1418s) which has no matching EDL block. It's manually appended at the correct cut timestamp.
 
-Both fixes are applied by the post-processing step that also handles muxing and GitHub release uploads.
+Both fixes were applied by hand after generation.
 
 ### Subtitle track naming
 
@@ -123,7 +195,29 @@ The muxed MKV track is labeled "English subtitles" (originally "English AI subti
 3. Run `retime` with every source episode first and the cut last (see "Retime usage" below), adding `--op-from` with the One Pace file for that episode's opening (see "OP (Opening) handling"). It takes a few minutes.
 4. The subtitled MKV and the ASS land in `output/episodes/<episode name with [Retimed Subs]>/`.
 
-If it's not clear which source episodes a cut uses, pass the likely neighbours. The run prints `Warning: no part of the cut matched <file>` for any source it didn't need. A stretch of the cut with dialogue but no subtitles usually means a source episode is missing. A cut longer than a single source episode always draws from more than one.
+If it's not clear which source episodes a cut uses, start with the obvious ones: `retime` lists any part of the cut it can't find in them and asks for another episode (see "Missing source episodes"). Or pass the likely neighbours up front, including the episode before the first obvious one: a cut can open on, or cut back to, the closing scene of the previous episode (Marine Base G-8 02 takes one exchange from the end of episode 197). The run prints `Warning: no part of the cut matched <file>` for any source it didn't need. A stretch of the cut with dialogue but no subtitles usually means a source episode is missing. A cut longer than a single source episode always draws from more than one.
+
+### Releasing an episode
+
+Each episode gets its own GitHub release with the subtitle file attached (no video). The tag and the title carry the series name, since episode numbers restart with each Fun Pace series. The five Straw Hats Daily releases predate this and keep their `episode-<NN>-<title>` tags:
+
+| Field | Format | Example |
+|-------|--------|---------|
+| Tag | `<series>-<NN>-<title>`, all in lowercase, words joined by dashes, no apostrophes | `marine-base-g-8-01-the-ghosting-merry` |
+| Title | `<Series> <NN>: <Title>` | `Marine Base G-8 01: The Ghosting Merry` |
+| Notes | `<Series> Episode <NN> with retimed English subtitles and ASS styling.` | `Marine Base G-8 Episode 01 with retimed English subtitles and ASS styling.` |
+| Asset | `<series>_<NN>_<title>_retimed_subs.ass`, all in lowercase, words joined by underscores | `marine_base_g_8_01_the_ghosting_merry_retimed_subs.ass` |
+
+For an episode made with `run` instead of `retime`, the notes say "AI-generated" instead of "retimed" and the asset ends in `_ai_subs.ass`.
+
+Once the episode has been watched through, the `release` command does all of this from the cut's file name. It needs the [GitHub CLI](https://cli.github.com/) (`gh`), logged in:
+
+```text
+scripts/fun-pace-subs.py release "input/episodes/<fun pace cut>.mkv" --dry-run
+scripts/fun-pace-subs.py release "input/episodes/<fun pace cut>.mkv"
+```
+
+`--dry-run` only prints the tag, title, notes and asset it would publish. Without it, the release is created with the episode's generated ASS from `output/episodes/` attached (the retimed one if both a retimed and an AI-generated file exist). Running it again for the same episode replaces the attached file on the existing release, which is how to publish a fix. `--subs <path>` attaches a different file.
 
 ### Retime usage
 
@@ -134,7 +228,7 @@ scripts/fun-pace-subs.py retime "input/source-episodes/<uncut episode>.mkv" ["in
 The last argument is the cut; everything before it is a source episode. For example, Marine Base G-8 01 draws from episodes 196 and 197:
 
 ```text
-nix develop path:$PWD --no-write-lock-file -c scripts/fun-pace-subs.py retime \
+nix develop . --no-write-lock-file -c scripts/fun-pace-subs.py retime \
   "input/source-episodes/[A&C] One Piece - 0196 [DVDrip] [Multi-Audio-Subs] [E7E032A4].mkv" \
   "input/source-episodes/[A&C] One Piece - 0197 [DVDrip] [Multi-Audio-Subs] [380C63A1].mkv" \
   "input/episodes/[FunPace] Marine Base G-8 01 - The Ghosting Merry [Dual Audio][Subs Missing][1080p].mkv" \
@@ -194,14 +288,16 @@ python3 scripts/fun-pace-subs.py run <input.mkv>
 
 If you want reproducible tool dependencies via Nix on Linux/macOS:
 
+Use `nix develop .`, not `nix develop path:$PWD`. The `path:` form copies the whole project folder into the Nix store on every run, videos included (about 20 GB each time with a full set of episodes), and those copies stay there until garbage-collected. The `.` form only copies the files tracked by git.
+
 ```text
-nix develop path:$PWD --no-write-lock-file -c scripts/fun-pace-subs.py run "input/episodes/[FunPace] Straw Hats Daily 01 - Chopper's Concoctions [Dual Audio][Subs Missing][1080p].mkv" --model large-v3
+nix develop . --no-write-lock-file -c scripts/fun-pace-subs.py run "input/episodes/[FunPace] Straw Hats Daily 01 - Chopper's Concoctions [Dual Audio][Subs Missing][1080p].mkv" --model large-v3
 ```
 
 If you only want ASS output (skip mux):
 
 ```text
-nix develop path:$PWD --no-write-lock-file -c scripts/fun-pace-subs.py run "input/episodes/[FunPace] Straw Hats Daily 01 - Chopper's Concoctions [Dual Audio][Subs Missing][1080p].mkv" --no-mux
+nix develop . --no-write-lock-file -c scripts/fun-pace-subs.py run "input/episodes/[FunPace] Straw Hats Daily 01 - Chopper's Concoctions [Dual Audio][Subs Missing][1080p].mkv" --no-mux
 ```
 
 To transcribe the source language without translating (e.g. Japanese subtitles for Japanese audio, or English subtitles for the English dub track):

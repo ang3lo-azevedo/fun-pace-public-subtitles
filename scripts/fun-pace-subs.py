@@ -36,6 +36,7 @@ from lib.muxing import (
     mux_subtitles,
     resolve_style_reference_ass,
 )
+from lib.releasing import release_episode
 from lib.rephrasing import rephrase_srt
 from lib.retiming import retime_episode_subtitles
 from lib.transcription import transcribe_audio
@@ -201,6 +202,11 @@ def parse_args() -> argparse.Namespace:
     )
     retime_cmd.add_argument("--no-mux", action="store_true")
 
+    release_cmd = sub.add_parser("release")
+    release_cmd.add_argument("cut_video", help="The Fun Pace cut whose generated subtitles to publish as a GitHub release")
+    release_cmd.add_argument("--subs", help="Defaults to the episode's generated ASS under output/episodes/")
+    release_cmd.add_argument("--dry-run", action="store_true", help="Show what would be published without publishing")
+
     return parser.parse_args()
 
 
@@ -365,7 +371,14 @@ def main() -> None:
             if not op_path.is_file():
                 die(f"OP reference ASS not found: {op_path}")
             op_from_ass = str(op_path)
-        if not retime_episode_subtitles(args.source_videos, args.cut_video, output_ass, env, style_reference_ass, op_from_ass):
+        # Hand-written lines for this cut, if any (see "Manual lines" in the README).
+        manual_lines_path = PROJECT_ROOT / "data" / "manual-lines" / f"{cut_path.stem}.ass"
+        manual_lines_ass = str(manual_lines_path) if manual_lines_path.is_file() else None
+        if manual_lines_ass:
+            log(f"Adding manual lines from {manual_lines_path}")
+        if not retime_episode_subtitles(
+            args.source_videos, args.cut_video, output_ass, env, style_reference_ass, op_from_ass, manual_lines_ass
+        ):
             die("Retiming failed: no subtitle cues survived the alignment")
         log(f"Wrote retimed subtitles to {output_ass}")
 
@@ -377,6 +390,10 @@ def main() -> None:
             muxed_output = str(episode_root / f"{mux_base_name}.mkv")
             mux_subtitles(args.cut_video, output_ass, muxed_output, env, fonts_dir=PROJECT_ROOT / "input" / "fonts")
             log(f"Wrote muxed MKV to {muxed_output}")
+        return
+
+    if args.command == "release":
+        release_episode(args.cut_video, PROJECT_ROOT / "output" / "episodes", env, args.subs, args.dry_run)
         return
 
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 import tempfile
 import wave
 from pathlib import Path
@@ -73,6 +74,13 @@ MIN_CUE_MATCH_SCORE = 0.2
 # kept at its block's offset if it sits at least this deep inside the block,
 # well clear of the imprecise boundaries.
 BLOCK_INTERIOR_SECONDS = 10.0
+# A match scoring below WEAK is dropped if it lands on top of one scoring at
+# least CONFIDENT that it didn't overlap in the source: two lines can't both
+# be spoken there, and the confident one is. Seen on Marine Base G-8 02: a
+# line from a removed scene scored 0.29 against the stretch a real line
+# (1.00) occupies.
+WEAK_CUE_MATCH_SCORE = 0.5
+CONFIDENT_CUE_MATCH_SCORE = 0.8
 # Source lines known to be from content cut from the Fun Pace edit.
 _BLOCKED_TEXTS = [
     "TaboTabo bacteria",
@@ -197,21 +205,171 @@ def resolve_edl(matches: list[tuple[float, float, float, int]]) -> list[dict]:
     return edl
 
 
-def build_edl(source_wavs: list[str], cut_wav: str, env: dict[str, str]) -> list[dict]:
+def build_edl(
+    source_wavs: list[str],
+    cut_wav: str,
+    env: dict[str, str],
+    window_matches: list[list[tuple[float, float, float]]] | None = None,
+) -> tuple[list[dict], list[tuple[float, float]]]:
     """A cut stitched together from more than one source episode is aligned
     against each of them separately; every window of the cut then goes to
     whichever source matched it best. Each block records which source (an
-    index into source_wavs) it belongs to.
+    index into source_wavs) it belongs to. Also returns the (start, end)
+    stretches of the cut that none of the sources account for.
+
+    window_matches caches each source's per-window results between calls, so
+    adding a source later only costs aligning that one.
     """
+    if window_matches is None:
+        window_matches = []
+    for source_wav in source_wavs[len(window_matches):]:
+        window_matches.append(_windowed_matches(source_wav, cut_wav, env))
     best: dict[float, tuple[float, float, float, int]] = {}
-    for source, source_wav in enumerate(source_wavs):
-        for cut_time, source_time, score in _windowed_matches(source_wav, cut_wav, env):
+    for source, matches in enumerate(window_matches):
+        for cut_time, source_time, score in matches:
             if cut_time not in best or score > best[cut_time][2]:
                 best[cut_time] = (cut_time, source_time, score, source)
     edl = resolve_edl(list(best.values()))
     if not edl:
         die("Could not align any part of the cut against the source episode(s)")
-    return edl
+    inserts, unaccounted = _find_short_inserts(source_wavs, cut_wav, edl, env)
+    if inserts:
+        log(f"Found {len(inserts)} short insert(s) the alignment windows missed")
+    return sorted(edl + inserts, key=lambda block: block["cut_start"]), unaccounted
+
+
+def _find_short_inserts(
+    source_wavs: list[str], cut_wav: str, edl: list[dict], env: dict[str, str]
+) -> tuple[list[dict], list[tuple[float, float]]]:
+    """A stretch of the cut shorter than an alignment window never dominates
+    one, so it gets no block of its own, and if it comes from an episode
+    nothing else in the cut uses, that episode isn't matched at all (seen on
+    Marine Base G-8 02: a 5-second exchange taken from the end of the
+    previous episode). This checks the cut in short windows against what the
+    blocks predict, and searches every source in full for the windows they
+    don't explain. Returns extra blocks, same shape as resolve_edl()'s, and
+    the (start, end) stretches of the cut that still match nothing: either
+    material that isn't from the series at all (a title card, re-mixed
+    audio) or a source episode that wasn't given.
+    """
+    python_code = (
+        "import json\n"
+        "import sys\n"
+        "\n"
+        "import numpy as np\n"
+        "from scipy.io import wavfile\n"
+        "from scipy.signal import decimate, fftconvolve\n"
+        "\n"
+        "cut_wav, edl_json, window_seconds, explained_score, insert_score = sys.argv[1:6]\n"
+        "source_wavs = sys.argv[6:]\n"
+        "edl = json.loads(edl_json)\n"
+        "window_seconds = float(window_seconds)\n"
+        "explained_score = float(explained_score)\n"
+        "insert_score = float(insert_score)\n"
+        "\n"
+        "def load_mono(path):\n"
+        "    sr, data = wavfile.read(path)\n"
+        "    if data.dtype != np.float32:\n"
+        "        data = data.astype(np.float32) / 32768.0\n"
+        "    return sr, data\n"
+        "\n"
+        "def match_scores(region, segment):\n"
+        "    segment = segment - segment.mean()\n"
+        "    corr = fftconvolve(region, segment[::-1], mode='valid')\n"
+        "    squares = np.concatenate(([0.0], np.cumsum(region.astype(np.float64) ** 2)))\n"
+        "    energy = squares[len(segment):] - squares[:-len(segment)]\n"
+        "    return corr / (np.sqrt(energy * float(np.sum(segment ** 2))) + 1e-9)\n"
+        "\n"
+        "sr, cut = load_mono(cut_wav)\n"
+        "window = int(window_seconds * sr)\n"
+        "starts = list(range(0, max(len(cut) - window, 0), sr))\n"
+        "# Near-silence can't be told apart from anything, so it counts as explained.\n"
+        "explained = [1.0 if np.sqrt(np.mean(cut[s:s + window] ** 2)) < 0.005 else 0.0 for s in starts]\n"
+        "\n"
+        "# Pass 1: does each window hold what one of its nearby blocks predicts?\n"
+        "margin, radius = 15.0, 6.0\n"
+        "for source, source_wav in enumerate(source_wavs):\n"
+        "    blocks = [block for block in edl if block['source'] == source]\n"
+        "    if not blocks:\n"
+        "        continue\n"
+        "    _, src = load_mono(source_wav)\n"
+        "    for i, start in enumerate(starts):\n"
+        "        t = start / sr\n"
+        "        for block in blocks:\n"
+        "            if explained[i] >= explained_score:\n"
+        "                break\n"
+        "            if t + window_seconds < block['cut_start'] - margin or t > block['cut_end'] + margin:\n"
+        "                continue\n"
+        "            predicted = t + block['source_start'] - block['cut_start']\n"
+        "            lo = max(0, int((predicted - radius) * sr))\n"
+        "            region = src[lo:int((predicted + radius) * sr) + window]\n"
+        "            if len(region) > window:\n"
+        "                explained[i] = max(explained[i], float(match_scores(region, cut[start:start + window]).max()))\n"
+        "\n"
+        "# Pass 2: search every source in full for the unexplained windows, at a\n"
+        "# quarter of the sample rate to keep that affordable.\n"
+        "unexplained = [i for i, score in enumerate(explained) if score < explained_score]\n"
+        "hits = {}\n"
+        "if unexplained:\n"
+        "    cut_low = decimate(cut, 4).astype(np.float32)\n"
+        "    low_sr = sr // 4\n"
+        "    low_window = window // 4\n"
+        "    for source, source_wav in enumerate(source_wavs):\n"
+        "        _, src = load_mono(source_wav)\n"
+        "        src_low = decimate(src, 4).astype(np.float32)\n"
+        "        for i in unexplained:\n"
+        "            low_start = starts[i] // 4\n"
+        "            scores = match_scores(src_low, cut_low[low_start:low_start + low_window])\n"
+        "            idx = int(np.argmax(scores))\n"
+        "            if scores[idx] >= insert_score and (i not in hits or scores[idx] > hits[i][2]):\n"
+        "                hits[i] = (source, idx / low_sr - starts[i] / sr, float(scores[idx]))\n"
+        "\n"
+        "# Consecutive windows from the same place in the same source are one insert.\n"
+        "blocks = []\n"
+        "for i in sorted(hits):\n"
+        "    source, offset, _ = hits[i]\n"
+        "    t = starts[i] / sr\n"
+        "    last = blocks[-1] if blocks else None\n"
+        "    if last and last['source'] == source and abs(last['offset'] - offset) < 0.5 and t <= last['cut_end']:\n"
+        "        last['cut_end'] = t + window_seconds\n"
+        "        continue\n"
+        "    blocks.append({'source': source, 'offset': offset, 'cut_start': t, 'cut_end': t + window_seconds})\n"
+        "for block in blocks:\n"
+        "    offset = block.pop('offset')\n"
+        "    block['source_start'] = block['cut_start'] + offset\n"
+        "    block['source_end'] = block['cut_end'] + offset\n"
+        "\n"
+        "# What's left: runs of windows found in no source.\n"
+        "unaccounted = []\n"
+        "for i in unexplained:\n"
+        "    if i in hits:\n"
+        "        continue\n"
+        "    t = starts[i] / sr\n"
+        "    if unaccounted and t <= unaccounted[-1][1]:\n"
+        "        unaccounted[-1][1] = t + window_seconds\n"
+        "    else:\n"
+        "        unaccounted.append([t, t + window_seconds])\n"
+        "print(json.dumps({'blocks': blocks, 'unaccounted': unaccounted}))\n"
+    )
+    args = [
+        "uvx",
+        "--from",
+        "scipy",
+        "python",
+        "-c",
+        python_code,
+        cut_wav,
+        json.dumps(edl),
+        str(INSERT_WINDOW_SECONDS),
+        str(INSERT_EXPLAINED_SCORE),
+        str(INSERT_MATCH_SCORE),
+        *source_wavs,
+    ]
+    result = json.loads(run_command(args, env=env, capture=True).stdout)
+    unaccounted = [
+        (start, end) for start, end in result["unaccounted"] if end - start >= MIN_UNACCOUNTED_SECONDS
+    ]
+    return result["blocks"], unaccounted
 
 
 _ASS_TIME_RE = re.compile(r"(\d+):(\d{2}):(\d{2})\.(\d{2})")
@@ -299,6 +457,16 @@ OPENING_WINDOW_SECONDS = 130
 # See _lyrics_shift(). Lyric lines are several seconds apart, so this is
 # tight enough not to pair a line with its neighbour.
 LYRICS_PAIRING_TOLERANCE_SECONDS = 0.5
+# See _find_short_inserts(). A window straddling a splice still half-matches
+# its block (around 0.5), so "explained" is set below that; a full-source
+# search of a couple of seconds of audio peaks around 0.2-0.45 on noise, so a
+# real insert has to clear well above it.
+INSERT_WINDOW_SECONDS = 2.5
+INSERT_EXPLAINED_SCORE = 0.35
+INSERT_MATCH_SCORE = 0.6
+# Shorter unmatched stretches than this aren't reported: a single window can
+# fail just for sitting on a splice or a crossfade.
+MIN_UNACCOUNTED_SECONDS = 4.0
 # See _exact_reference_offset().
 SCENE_CHANGE_SCORE = 0.3
 SCENE_SNAP_SECONDS = 0.5
@@ -451,6 +619,7 @@ def _place_cues(
     timeline, or None if it didn't survive the cut. The blocks only narrow
     down where to look; the cue's own audio decides.
     """
+    scores: list[float] = []
     requests = []
     for start, end in cues:
         predictions: list[float] = []
@@ -466,6 +635,7 @@ def _place_cues(
 
     placements: list[float | None] = []
     for (start, end), located in zip(cues, _locate_cues(source_wav, cut_wav, requests, env)):
+        scores.append(located[1] if located is not None else 0.0)
         if located is not None and located[1] >= MIN_CUE_MATCH_SCORE:
             placements.append(located[0])
             continue
@@ -479,6 +649,21 @@ def _place_cues(
             None,
         )
         placements.append(start + interior["cut_start"] - interior["source_start"] if interior else None)
+
+    confident = [
+        (start, end, placement)
+        for (start, end), placement, score in zip(cues, placements, scores)
+        if placement is not None and score >= CONFIDENT_CUE_MATCH_SCORE
+    ]
+    for index, ((start, end), placement, score) in enumerate(zip(cues, placements, scores)):
+        if placement is None or score >= WEAK_CUE_MATCH_SCORE:
+            continue
+        for other_start, other_end, other_placement in confident:
+            overlapped_in_source = start < other_end and other_start < end
+            shared = min(placement + end - start, other_placement + other_end - other_start) - max(placement, other_placement)
+            if not overlapped_in_source and shared > (end - start) / 2:
+                placements[index] = None
+                break
     return placements
 
 
@@ -750,6 +935,7 @@ def retime_and_restyle_ass(
     style_reference_ass: str | None,
     op_from_ass: str | None = None,
     cut_video: str | None = None,
+    manual_lines_ass: str | None = None,
 ) -> int:
     """Slices each source subtitle file down to only the cues whose audio
     survived into the cut, retiming each into the cut's own timeline, and
@@ -781,6 +967,19 @@ def retime_and_restyle_ass(
             )
         )
 
+    # Source episodes share some audio (the opening's spoken intro, a recap
+    # of the previous episode), and each one's own line for it gets placed on
+    # the same spot. Only the first is kept.
+    seen: list[tuple[float, str]] = []
+    unique: list[tuple[float, str, float]] = []
+    for entry in kept_dialogue:
+        text = entry[1].split(",", 9)[9]
+        if any(text == other_text and abs(entry[0] - other_start) < 1.0 for other_start, other_text in seen):
+            continue
+        seen.append((entry[0], text))
+        unique.append(entry)
+    kept_dialogue = unique
+
     if op_offsets:
         rough_offset = sorted(op_offsets)[len(op_offsets) // 2]
         op_offset = _exact_reference_offset(op_raw, rough_offset, cut_video, env)
@@ -791,6 +990,16 @@ def retime_and_restyle_ass(
             parts[1] = format_ass_time(start)
             parts[2] = format_ass_time(end)
             kept_dialogue.append((start, ",".join(parts), start))
+
+    # Hand-written lines for what no source subtitle covers (e.g. the cut
+    # re-edited the dialogue itself), already timed to the cut.
+    if manual_lines_ass:
+        manual_raw = Path(manual_lines_ass).read_text(encoding="utf-8-sig", errors="replace")
+        for line in manual_raw.splitlines():
+            parts = line.split(",", 9)
+            if line.startswith("Dialogue:") and len(parts) == 10:
+                start = parse_ass_time(parts[1])
+                kept_dialogue.append((start, line, start))
 
     # Clip to the cut's own duration: drop any subtitle that starts past
     # its end, and clip lines that extend past it. Not the last block's end:
@@ -819,6 +1028,10 @@ def retime_and_restyle_ass(
     return len(kept_dialogue)
 
 
+def _format_clock(seconds: float) -> str:
+    return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
+
+
 def retime_episode_subtitles(
     source_videos: list[str],
     cut_video: str,
@@ -826,6 +1039,7 @@ def retime_episode_subtitles(
     env: dict[str, str],
     style_reference_ass: str | None = None,
     op_from_ass: str | None = None,
+    manual_lines_ass: str | None = None,
 ) -> bool:
     """Top-level entry point: pull the embedded subtitle stream out of each
     uncut source episode, extract Japanese audio from every video to align
@@ -834,7 +1048,9 @@ def retime_episode_subtitles(
     with tempfile.TemporaryDirectory() as tmp:
         source_asses: list[str] = []
         source_wavs: list[str] = []
-        for source, source_video in enumerate(source_videos):
+
+        def add_source(source_video: str) -> None:
+            source = len(source_wavs)
             source_ass = str(Path(tmp) / f"source{source}.ass")
             log(f"Extracting embedded subtitles from {Path(source_video).name}")
             extract_source_subtitles(source_video, source_ass, env)
@@ -845,17 +1061,45 @@ def retime_episode_subtitles(
             extract_alignment_audio(source_video, source_wav, env)
             source_wavs.append(source_wav)
 
+        for source_video in source_videos:
+            add_source(source_video)
+
         cut_wav = str(Path(tmp) / "cut.wav")
         log(f"Extracting Japanese audio from {Path(cut_video).name}")
         extract_alignment_audio(cut_video, cut_wav, env)
 
         log("Cross-correlating audio to find kept scene ranges")
-        edl = build_edl(source_wavs, cut_wav, env)
+        window_matches: list[list[tuple[float, float, float]]] = []
+        while True:
+            edl, unaccounted = build_edl(source_wavs, cut_wav, env, window_matches)
+            if not unaccounted:
+                break
+            total = sum(end - start for start, end in unaccounted)
+            log(f"{total:.0f}s of the cut match none of the source episodes given:")
+            for start, end in unaccounted:
+                log(f"  {_format_clock(start)} - {_format_clock(end)}")
+            log("These are either not from the series (a title card, re-mixed audio) or from a missing source episode.")
+            if not sys.stdin.isatty():
+                break
+            sys.stderr.write("Path to another source episode to try (Enter to continue without): ")
+            sys.stderr.flush()
+            answer = sys.stdin.readline().strip().strip("'\"")
+            if not answer:
+                break
+            extra_video = str(Path(answer).expanduser())
+            if not Path(extra_video).is_file():
+                log(f"Not a file: {extra_video}")
+                continue
+            if any(Path(extra_video).resolve() == Path(video).resolve() for video in source_videos):
+                log("That episode is already one of the sources.")
+                continue
+            source_videos = [*source_videos, extra_video]
+            add_source(extra_video)
         log(f"Found {len(edl)} kept scene block(s)")
         for source, source_video in enumerate(source_videos):
             if not any(block["source"] == source for block in edl):
                 log(f"Warning: no part of the cut matched {Path(source_video).name}")
 
-        kept = retime_and_restyle_ass(source_asses, source_wavs, cut_wav, edl, output_ass, env, style_reference_ass, op_from_ass, cut_video)
+        kept = retime_and_restyle_ass(source_asses, source_wavs, cut_wav, edl, output_ass, env, style_reference_ass, op_from_ass, cut_video, manual_lines_ass)
         log(f"Retimed {kept} subtitle cue(s) to {output_ass}")
     return kept > 0
